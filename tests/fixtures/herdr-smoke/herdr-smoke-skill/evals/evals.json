@@ -1,0 +1,25 @@
+{
+  "schema_version": 2,
+  "skill_name": "herdr-smoke-skill",
+  "suite_type": "regression",
+  "dataset_origin": "author_derived",
+  "tool_profile": "no_tools",
+  "evals": [
+    {
+      "id": "visible-smoke",
+      "behavior_class": "positive",
+      "prompt": "Return PASS.",
+      "expected_skill_loading": "required",
+      "graders": [
+        {
+          "name": "Returns the marker",
+          "type": "response_contains",
+          "value": "PASS"
+        }
+      ],
+      "reference": {
+        "response": "PASS"
+      }
+    }
+  ]
+}

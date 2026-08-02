@@ -1,0 +1,7 @@
+interface:
+  display_name: "Skill Eval Loop"
+  short_description: "Run independent paired skill diagnostics"
+  default_prompt: "Use $skill-eval-loop to independently prepare missing evals, recommend an available harness model, and compare this skill with a no-skill control."
+
+policy:
+  allow_implicit_invocation: false
