@@ -234,7 +234,12 @@ even trial: with-skill → without-skill
 ```
 
 The runner validates references before target trials and retains provenance
-and hashes.
+and hashes. After every paid call, it verifies trace-attested model identity
+before starting any downstream call. A missing or mismatched judge identity
+therefore stops during the first reference judge; without model rubrics, a
+missing or mismatched target identity stops after the first target call. For a
+forced Codex treatment, the runner also requires trace-visible access to the
+full structured skill payload before starting downstream grading.
 
 Complete when: the pilot pair finishes and `run_manifest.json` plus
 `benchmark.json` exist. For an invalid run, preserve its evidence, report the
@@ -257,7 +262,8 @@ python3 "$SKILL_EVAL_DIR/scripts/aggregate_benchmark.py" \
 
 Aggregation fails on missing artifacts, hash drift, inconsistent grading,
 control exposure, or an installed payload that differs from the evaluated
-skill.
+skill. It reparses hashed runtime-attestation traces instead of trusting cached
+routing booleans in the manifest.
 
 Complete when: aggregation succeeds and the regenerated benchmark has
 `"valid": true`. Otherwise report the integrity failure and preserve the run.

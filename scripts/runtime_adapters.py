@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -48,6 +49,14 @@ def validate_pinned_model(model: str) -> None:
     normalized = model.strip().lower()
     if not normalized or normalized in {"auto", "default"} or "latest" in normalized:
         raise ValueError("use an exact pinned model id, not a moving alias")
+
+
+def model_matches(requested: str, actual: object) -> bool:
+    if not isinstance(actual, str) or not actual:
+        return False
+    requested_leaf = requested.rsplit("/", 1)[-1].lower()
+    actual_leaf = actual.rsplit("/", 1)[-1].lower()
+    return requested_leaf == actual_leaf
 
 
 def resolve_harness(
@@ -244,7 +253,6 @@ def build_invocation(
             executable,
             "exec",
             "--json",
-            "--ephemeral",
             "--skip-git-repo-check",
             "--ignore-user-config",
             "--ignore-rules",
@@ -371,7 +379,6 @@ def build_judge_invocation(
             executable,
             "exec",
             "--json",
-            "--ephemeral",
             "--skip-git-repo-check",
             "--ignore-user-config",
             "--ignore-rules",
@@ -496,6 +503,8 @@ def trace_metadata(
     harness: str = "pi",
     requested_model: str = "",
     usage_path: Path | None = None,
+    codex_home: Path | None = None,
+    attestation_trace_path: Path | None = None,
 ) -> dict[str, object]:
     session_ids: list[str] = []
     models: list[str] = []
@@ -581,6 +590,90 @@ def trace_metadata(
             ):
                 skill_explicitly_accessed = True
 
+    if (
+        harness == "codex"
+        and attestation_trace_path is None
+        and codex_home
+        and session_ids
+    ):
+        session_id = session_ids[-1]
+        matches = sorted(
+            (codex_home / "sessions").rglob(f"*{session_id}.jsonl")
+        )
+        if len(matches) == 1:
+            attestation_trace_path = matches[0]
+    if harness == "codex" and attestation_trace_path:
+        if attestation_trace_path.is_file():
+            for line in attestation_trace_path.read_text(
+                encoding="utf-8"
+            ).splitlines():
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(event, dict):
+                    continue
+                payload = event.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                if (
+                    event.get("type") == "turn_context"
+                    and isinstance(payload.get("model"), str)
+                ):
+                    models.append(payload["model"])
+                if skill_name and event.get("type") == "world_state":
+                    state = payload.get("state")
+                    host_skills = (
+                        state.get("host_skills")
+                        if isinstance(state, dict)
+                        else None
+                    )
+                    body = (
+                        host_skills.get("body")
+                        if isinstance(host_skills, dict)
+                        else None
+                    )
+                    if isinstance(body, str):
+                        pattern = (
+                            rf"(?m)^-\s+{re.escape(skill_name)}:"
+                            rf"[^\n]*\(file:\s+.*?/{re.escape(skill_name)}/"
+                            rf"SKILL\.md\)"
+                        )
+                        skill_injection_attested = (
+                            skill_injection_attested
+                            or re.search(pattern, body, re.IGNORECASE) is not None
+                        )
+                if (
+                    skill_name
+                    and event.get("type") == "response_item"
+                    and payload.get("type") == "message"
+                    and payload.get("role") == "user"
+                ):
+                    content = "\n".join(
+                        text.lower()
+                        for text in _all_strings(payload.get("content"))
+                    )
+                    if (
+                        "<skill>" in content
+                        and f"<name>{skill_name.lower()}</name>" in content
+                        and installed
+                        and f"<path>{installed}/skill.md</path>" in content
+                    ):
+                        skill_explicitly_accessed = True
+                if (
+                    skill_name
+                    and event.get("type") == "response_item"
+                    and payload.get("type")
+                    in {"custom_tool_call", "function_call"}
+                ):
+                    strings = [text.lower() for text in _all_strings(payload)]
+                    if _explicit_skill_call(payload, skill_name) or any(
+                        target_suffix in text
+                        or (installed and installed in text and "skill.md" in text)
+                        for text in strings
+                    ):
+                        skill_explicitly_accessed = True
+
     if usage_path and usage_path.is_file():
         try:
             usage_report = json.loads(usage_path.read_text(encoding="utf-8"))
@@ -596,13 +689,25 @@ def trace_metadata(
     if harness == "hermes" and not responses and raw_trace.strip():
         responses.append(raw_trace.strip())
     usage = usage_records[-1] if usage_records else {}
+    model_identities = {
+        model.rsplit("/", 1)[-1].lower()
+        for model in models
+        if model.strip()
+    }
+    model_attestation_conflict = len(model_identities) > 1
+    actual_model = (
+        models[-1]
+        if models and not model_attestation_conflict
+        else ""
+    )
     cost: object = usage.get("cost")
     if isinstance(cost, dict):
         cost = cost.get("total")
     return {
         "session_id": session_ids[-1] if session_ids else "",
-        "actual_model": models[0] if models else "",
-        "model_attested": bool(models),
+        "actual_model": actual_model,
+        "model_attested": bool(actual_model),
+        "model_attestation_conflict": model_attestation_conflict,
         "skill_injection_attested": skill_injection_attested,
         "skill_explicitly_accessed": skill_explicitly_accessed,
         "final_response": responses[-1] if responses else "",
@@ -622,4 +727,5 @@ def trace_metadata(
             if cost is not None
             else usage.get("total_cost_usd", usage.get("estimated_cost_usd"))
         ),
+        "attestation_trace_path": attestation_trace_path,
     }

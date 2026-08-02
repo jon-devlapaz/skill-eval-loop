@@ -26,6 +26,7 @@ from model_grader import run_model_grade
 from runtime_adapters import (
     HARNESS_NAMES,
     build_invocation,
+    model_matches,
     resolve_harness,
     skill_payload_sha256,
     trace_metadata,
@@ -133,6 +134,10 @@ def _model_graders(
         )
         record["grader_name"] = grader["name"]
         record["trace_path"] = str(trace_path.relative_to(root))
+        if record.get("attestation_trace_path"):
+            record["attestation_trace_path"] = str(
+                Path(record["attestation_trace_path"]).relative_to(root)
+            )
         external[grader["name"]] = grade
         records.append(record)
     return external, records
@@ -274,7 +279,36 @@ def _run_condition(
         harness=harness,
         requested_model=model,
         usage_path=(outputs / "usage.json" if harness == "hermes" else None),
+        codex_home=(
+            Path(invocation.env["CODEX_HOME"])
+            if harness == "codex"
+            else None
+        ),
     )
+    if harness == "codex" and not metadata.get("attestation_trace_path"):
+        raise RuntimeError(
+            f"target model {model} was not attested; persisted Codex rollout "
+            f"is missing; see {trace_path}"
+        )
+    if metadata.get("model_attested") is not True:
+        raise RuntimeError(f"target model {model} was not attested; see {trace_path}")
+    actual_model = metadata.get("actual_model")
+    if not model_matches(model, actual_model):
+        raise RuntimeError(
+            f"requested target model {model} but attested {actual_model}; "
+            f"see {trace_path}"
+        )
+    if (
+        harness == "codex"
+        and condition == "with_skill"
+        and case["_activation_mode"] == "forced"
+        and metadata.get("skill_explicitly_accessed") is not True
+    ):
+        raise RuntimeError(
+            f"forced target skill {skill_path.name} was not explicitly accessed; "
+            f"see {trace_path}"
+        )
+    attestation_trace = metadata.get("attestation_trace_path")
     response = str(metadata.get("final_response", ""))
     response_path.write_text(response + ("\n" if response else ""), encoding="utf-8")
     external, judge_records = _model_graders(
@@ -331,6 +365,16 @@ def _run_condition(
         "judge_records": judge_records,
         "trace_path": str(trace_path.relative_to(root)),
         "trace_sha256": _sha256_file(trace_path),
+        "attestation_trace_path": (
+            str(Path(attestation_trace).relative_to(root))
+            if attestation_trace
+            else ""
+        ),
+        "attestation_trace_sha256": (
+            _sha256_file(Path(attestation_trace))
+            if attestation_trace
+            else ""
+        ),
         "response_path": str(response_path.relative_to(root)),
         "response_sha256": _sha256_file(response_path),
         "grading_path": str(grading_path.relative_to(root)),

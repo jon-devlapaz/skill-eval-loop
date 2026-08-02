@@ -10,7 +10,12 @@ import re
 import sys
 from pathlib import Path
 
-from runtime_adapters import HARNESS_NAMES, skill_payload_sha256
+from runtime_adapters import (
+    HARNESS_NAMES,
+    model_matches,
+    skill_payload_sha256,
+    trace_metadata,
+)
 
 
 CONDITIONS = ("without_skill", "with_skill")
@@ -46,18 +51,6 @@ def _require_hash(root: Path, record: dict, stem: str, label: str) -> Path:
     return path
 
 
-def _model_matches(requested: str, actual: object) -> bool:
-    if not isinstance(actual, str) or not actual:
-        return False
-    requested_leaf = requested.rsplit("/", 1)[-1].split(":", 1)[0]
-    actual_leaf = actual.rsplit("/", 1)[-1].split(":", 1)[0]
-    if requested_leaf == actual_leaf:
-        return True
-    requested_tokens = set(re.findall(r"[a-z]+|\d+(?:\.\d+)?", requested_leaf.lower()))
-    actual_tokens = set(re.findall(r"[a-z]+|\d+(?:\.\d+)?", actual_leaf.lower()))
-    return bool(requested_tokens) and requested_tokens.issubset(actual_tokens)
-
-
 def _load_grading(path: Path, label: str) -> tuple[dict, bool]:
     grading = json.loads(path.read_text(encoding="utf-8"))
     expectations = grading.get("expectations")
@@ -90,6 +83,49 @@ def _load_grading(path: Path, label: str) -> tuple[dict, bool]:
     return grading, passed == total
 
 
+def _judge_identity_valid(
+    *,
+    root: Path,
+    judge: dict,
+    label: str,
+    judge_model: str | None,
+    harness: str,
+) -> bool:
+    judge_trace = _require_hash(root, judge, "trace", label)
+    judge_attestation = None
+    if judge.get("attestation_trace_path"):
+        judge_attestation = _require_hash(
+            root,
+            judge,
+            "attestation_trace",
+            label,
+        )
+    valid = bool(judge_model) and model_matches(
+        str(judge_model or ""), judge.get("actual_model")
+    )
+    if harness != "codex":
+        return valid
+    if judge_attestation is None:
+        return False
+    metadata = trace_metadata(
+        judge_trace,
+        "",
+        harness=harness,
+        requested_model=str(judge_model or ""),
+        attestation_trace_path=judge_attestation,
+    )
+    attested_model = metadata.get("actual_model")
+    return (
+        valid
+        and metadata.get("model_attested") is True
+        and model_matches(str(judge_model or ""), attested_model)
+        and model_matches(
+            str(judge.get("actual_model", "")),
+            attested_model,
+        )
+    )
+
+
 def _condition_record(
     *,
     root: Path,
@@ -98,6 +134,7 @@ def _condition_record(
     pair_label: str,
     requested_model: str,
     judge_model: str | None,
+    harness: str,
     skill_name: str,
     skill_sha256: str,
 ) -> dict:
@@ -107,6 +144,14 @@ def _condition_record(
     if record.get("condition") != condition:
         raise ValueError(f"{label}.condition does not match its manifest key")
     trace_path = _require_hash(root, record, "trace", label)
+    attestation_trace = None
+    if record.get("attestation_trace_path"):
+        attestation_trace = _require_hash(
+            root,
+            record,
+            "attestation_trace",
+            label,
+        )
     _require_hash(root, record, "response", label)
     grading_path = _require_hash(root, record, "grading", label)
     grading, task_success = _load_grading(grading_path, label)
@@ -116,7 +161,7 @@ def _condition_record(
         invalid.append("timeout")
     if record.get("exit_code") != 0:
         invalid.append("runtime_error")
-    if not _model_matches(requested_model, record.get("actual_model")):
+    if not model_matches(requested_model, record.get("actual_model")):
         invalid.append("model_mismatch")
     if record.get("model_attested") is False:
         invalid.append("model_not_attested")
@@ -127,15 +172,18 @@ def _condition_record(
         judge_label = f"{label}.judge_records[{index}]"
         if not isinstance(judge, dict):
             raise ValueError(f"{judge_label} must be an object")
-        _require_hash(root, judge, "trace", judge_label)
-        if not judge_model or not _model_matches(
-            judge_model,
-            judge.get("actual_model"),
+        if not _judge_identity_valid(
+            root=root,
+            judge=judge,
+            label=judge_label,
+            judge_model=judge_model,
+            harness=harness,
         ):
             invalid.append("judge_model_mismatch")
 
     installed_value = record.get("installed_skill_path")
     available = record.get("available_skills")
+    installed = None
     if condition == "without_skill":
         if installed_value or available:
             raise ValueError(f"{label} exposes the target skill in the control")
@@ -148,6 +196,29 @@ def _condition_record(
         if skill_payload_sha256(installed) != skill_sha256:
             raise ValueError(f"{label} installed payload differs from evaluated skill")
 
+    metadata = (
+        trace_metadata(
+            trace_path,
+            skill_name,
+            installed,
+            harness=harness,
+            requested_model=requested_model,
+            attestation_trace_path=attestation_trace,
+        )
+        if attestation_trace
+        else None
+    )
+    if harness == "codex" and metadata is None:
+        invalid.append("attestation_trace_missing")
+    if metadata is not None:
+        attested_model = metadata.get("actual_model")
+        if metadata.get("model_attested") is not True:
+            invalid.append("model_not_attested")
+        if not model_matches(requested_model, attested_model):
+            invalid.append("model_mismatch")
+        if not model_matches(str(record.get("actual_model", "")), attested_model):
+            invalid.append("manifest_model_mismatch")
+
     return {
         "success": task_success and not {"timeout", "runtime_error"} & set(invalid),
         "grading": grading,
@@ -159,14 +230,20 @@ def _condition_record(
         "skill_activation": record.get("skill_activation"),
         "expected_skill_loading": record.get("expected_skill_loading"),
         "skill_injection_attested": (
-            record.get("skill_injection_attested") is True
+            metadata.get("skill_injection_attested") is True
+            if metadata
+            else record.get("skill_injection_attested") is True
         ),
         "skill_explicitly_accessed": (
-            record.get(
-                "skill_explicitly_accessed",
-                record.get("skill_loaded"),
+            metadata.get("skill_explicitly_accessed") is True
+            if metadata
+            else (
+                record.get(
+                    "skill_explicitly_accessed",
+                    record.get("skill_loaded"),
+                )
+                is True
             )
-            is True
         ),
         "duration_seconds": record.get("duration_seconds"),
         "total_tokens": record.get("total_tokens"),
@@ -239,10 +316,14 @@ def aggregate(run_dir: Path) -> dict:
             )
             if not isinstance(judge, dict):
                 raise ValueError(f"{label} must be an object")
-            _require_hash(root, judge, "trace", label)
-            if not judge_model or not _model_matches(
-                judge_model,
-                judge.get("actual_model"),
+            if not _judge_identity_valid(
+                root=root,
+                judge=judge,
+                label=label,
+                judge_model=(
+                    judge_model if isinstance(judge_model, str) else None
+                ),
+                harness=harness,
             ):
                 invalid_reason = f"reference/{ref_index}: judge_model_mismatch"
                 # Reference judge identity invalidates the run but does not
@@ -319,6 +400,7 @@ def aggregate(run_dir: Path) -> dict:
                 pair_label=pair_label,
                 requested_model=requested_model,
                 judge_model=judge_model if isinstance(judge_model, str) else None,
+                harness=harness,
                 skill_name=skill_name,
                 skill_sha256=str(skill_sha256),
             )

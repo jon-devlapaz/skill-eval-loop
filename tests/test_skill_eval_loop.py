@@ -35,6 +35,7 @@ from runtime_adapters import (  # noqa: E402
     HARNESS_NAMES,
     build_invocation,
     build_judge_invocation,
+    model_matches,
     skill_payload_sha256,
     trace_metadata,
     validate_pinned_model,
@@ -445,6 +446,15 @@ class SuiteAuditTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_model_identity_rejects_suffix_collisions(self) -> None:
+        self.assertTrue(
+            model_matches("provider/gpt-5.6-terra", "gpt-5.6-terra")
+        )
+        self.assertFalse(
+            model_matches("provider/model-1", "provider/model-1-preview")
+        )
+        self.assertFalse(model_matches("gpt-5.6", "gpt-5.6-evil"))
+
     def test_harness_choices_are_explicit_and_complete(self) -> None:
         self.assertEqual(
             HARNESS_NAMES,
@@ -659,6 +669,256 @@ class RuntimeTests(unittest.TestCase):
                 str(condition_dir / "codex-home"),
             )
             self.assertEqual(invocation.tool_enforcement, "sandbox_posture_only")
+
+    def test_codex_persists_session_for_runtime_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
+            invocation = build_invocation(
+                harness="codex",
+                executable="codex",
+                condition="with_skill",
+                condition_dir=root / "condition",
+                skill_path=skill,
+                prompt="task",
+                model="gpt-5.6-terra",
+                tool_profile="no_tools",
+            )
+            judge = build_judge_invocation(
+                harness="codex",
+                executable="codex",
+                model="gpt-5.6-sol",
+                prompt="judge",
+                run_dir=root / "judge",
+            )
+            self.assertNotIn("--ephemeral", invocation.command)
+            self.assertNotIn("--ephemeral", judge.command)
+
+    def test_codex_rollout_attests_model_and_skill_availability(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            trace = root / "trace.jsonl"
+            trace.write_text(
+                json.dumps(
+                    {"type": "thread.started", "thread_id": "thread-123"}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            codex_home = root / "codex-home"
+            rollout = (
+                codex_home
+                / "sessions"
+                / "2026"
+                / "08"
+                / "02"
+                / "rollout-thread-123.jsonl"
+            )
+            rollout.parent.mkdir(parents=True)
+            rollout.write_text(
+                "\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {
+                            "type": "turn_context",
+                            "payload": {"model": "gpt-5.6-terra"},
+                        },
+                        {
+                            "type": "world_state",
+                            "payload": {
+                                "state": {
+                                    "host_skills": {
+                                        "body": (
+                                            "- fixture-skill: (file: "
+                                            "/tmp/fixture-skill/SKILL.md)"
+                                        )
+                                    }
+                                }
+                            },
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            metadata = trace_metadata(
+                trace,
+                "fixture-skill",
+                harness="codex",
+                requested_model="gpt-5.6-terra",
+                codex_home=codex_home,
+            )
+            self.assertEqual(metadata["actual_model"], "gpt-5.6-terra")
+            self.assertTrue(metadata["model_attested"])
+            self.assertTrue(metadata["skill_injection_attested"])
+            self.assertFalse(metadata["skill_explicitly_accessed"])
+            self.assertEqual(metadata["attestation_trace_path"], rollout)
+
+    def test_conflicting_trace_models_fail_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            trace = root / "trace.jsonl"
+            trace.write_text(
+                "\n".join(
+                    (
+                        json.dumps(
+                            {
+                                "type": "thread.started",
+                                "thread_id": "thread-conflict",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "type": "system",
+                                "subtype": "init",
+                                "model": "gpt-5.6-terra",
+                            }
+                        ),
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            codex_home = root / "codex-home"
+            rollout = (
+                codex_home
+                / "sessions/2026/08/02/rollout-thread-conflict.jsonl"
+            )
+            rollout.parent.mkdir(parents=True)
+            rollout.write_text(
+                json.dumps(
+                    {
+                        "type": "turn_context",
+                        "payload": {"model": "gpt-5.6-sol"},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            metadata = trace_metadata(
+                trace,
+                "",
+                harness="codex",
+                requested_model="gpt-5.6-terra",
+                codex_home=codex_home,
+            )
+            self.assertEqual(metadata["actual_model"], "")
+            self.assertFalse(metadata["model_attested"])
+            self.assertTrue(metadata["model_attestation_conflict"])
+
+    def test_codex_skill_catalog_with_description_attests_injection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            trace = root / "trace.jsonl"
+            trace.write_text(
+                json.dumps(
+                    {"type": "thread.started", "thread_id": "thread-456"}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            codex_home = root / "codex-home"
+            rollout = (
+                codex_home
+                / "sessions/2026/08/02/rollout-thread-456.jsonl"
+            )
+            rollout.parent.mkdir(parents=True)
+            rollout.write_text(
+                "\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {
+                            "type": "turn_context",
+                            "payload": {"model": "gpt-5.6-terra"},
+                        },
+                        {
+                            "type": "world_state",
+                            "payload": {
+                                "state": {
+                                    "host_skills": {
+                                        "body": (
+                                            "- fixture-skill: Contextual skill "
+                                            "description. (file: /tmp/fixture-skill/"
+                                            "SKILL.md)"
+                                        )
+                                    }
+                                }
+                            },
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            metadata = trace_metadata(
+                trace,
+                "fixture-skill",
+                harness="codex",
+                requested_model="gpt-5.6-terra",
+                codex_home=codex_home,
+            )
+            self.assertTrue(metadata["skill_injection_attested"])
+
+    def test_codex_structured_skill_payload_attests_explicit_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            trace = root / "trace.jsonl"
+            trace.write_text(
+                json.dumps(
+                    {"type": "thread.started", "thread_id": "thread-789"}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            codex_home = root / "codex-home"
+            installed = (
+                root / "workspace/.agents/skills/fixture-skill"
+            ).resolve()
+            rollout = (
+                codex_home
+                / "sessions/2026/08/02/rollout-thread-789.jsonl"
+            )
+            rollout.parent.mkdir(parents=True)
+            rollout.write_text(
+                "\n".join(
+                    json.dumps(event)
+                    for event in (
+                        {
+                            "type": "turn_context",
+                            "payload": {"model": "gpt-5.6-terra"},
+                        },
+                        {
+                            "type": "response_item",
+                            "payload": {
+                                "type": "message",
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "input_text",
+                                        "text": (
+                                            "<skill>\n"
+                                            "<name>fixture-skill</name>\n"
+                                            f"<path>{installed}/SKILL.md</path>\n"
+                                            "</skill>"
+                                        ),
+                                    }
+                                ],
+                            },
+                        },
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            metadata = trace_metadata(
+                trace,
+                "fixture-skill",
+                installed,
+                harness="codex",
+                requested_model="gpt-5.6-terra",
+                codex_home=codex_home,
+            )
+            self.assertTrue(metadata["skill_explicitly_accessed"])
 
 
 class ProcessControlTests(unittest.TestCase):
@@ -979,6 +1239,584 @@ class PlanningTests(unittest.TestCase):
 
 
 class EndToEndTests(unittest.TestCase):
+    def test_forced_codex_treatment_requires_explicit_skill_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
+            fake = root / "fake-codex"
+            counter = root / "fake-codex.count"
+            fake.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+if "--version" in sys.argv:
+    print("fake-codex 1.0")
+    raise SystemExit(0)
+
+counter = Path(sys.argv[0]).with_suffix(".count")
+count = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(count))
+treatment = "$fixture-skill" in " ".join(sys.argv)
+rollout = (
+    Path(os.environ["CODEX_HOME"])
+    / "sessions/2026/08/02/rollout-fixture-session.jsonl"
+)
+rollout.parent.mkdir(parents=True, exist_ok=True)
+rollout.write_text(
+    "\\n".join(json.dumps(event) for event in [
+        {"type": "turn_context", "payload": {"model": "provider/model-1"}},
+        {
+            "type": "world_state",
+            "payload": {
+                "state": {
+                    "host_skills": {
+                        "body": (
+                            "- fixture-skill: (file: "
+                            "/tmp/fixture-skill/SKILL.md)"
+                            if treatment
+                            else ""
+                        )
+                    }
+                }
+            },
+        },
+    ]) + "\\n",
+    encoding="utf-8",
+)
+print(json.dumps({
+    "type": "system",
+    "subtype": "init",
+    "model": "provider/model-1",
+    "session_id": "fixture-session",
+    "skills": ["fixture-skill"] if treatment else [],
+}))
+print(json.dumps({
+    "message": {
+        "role": "assistant",
+        "model": "provider/model-1",
+        "content": [{"type": "text", "text": "done"}],
+    },
+}))
+""",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "forced target skill fixture-skill was not explicitly accessed",
+            ):
+                run_suite(
+                    skill_path=skill,
+                    output_dir=root / "run",
+                    model="provider/model-1",
+                    trials=1,
+                    harness="codex",
+                    harness_bin=str(fake),
+                )
+            self.assertEqual(counter.read_text(encoding="utf-8"), "2")
+
+    def test_missing_judge_attestation_stops_after_first_paid_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["graders"] = [
+                {
+                    "name": "Judge completion",
+                    "type": "model_rubric",
+                    "rubric": "The response completes the task.",
+                }
+            ]
+            _write_json(suite_path, suite)
+            fake = root / "fake-codex"
+            counter = root / "fake-codex.count"
+            fake.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+if "--version" in sys.argv:
+    print("fake-codex 1.0")
+    raise SystemExit(0)
+
+counter = Path(sys.argv[0]).with_suffix(".count")
+count = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(count))
+joined = " ".join(sys.argv)
+is_judge = "You are grading one agent response." in joined
+response = (
+    '{"passed": true, "reason": "fixture passes"}'
+    if is_judge
+    else "done"
+)
+model = "provider/judge-1" if is_judge else "provider/model-1"
+print(json.dumps({
+    "type": "system",
+    "subtype": "init",
+    "model": model,
+    "session_id": "missing-rollout",
+}))
+print(json.dumps({"type": "thread.started", "thread_id": "missing-model"}))
+print(json.dumps({
+    "type": "item.completed",
+    "item": {"type": "agent_message", "text": response},
+}))
+print(json.dumps({
+    "type": "turn.completed",
+    "usage": {"input_tokens": 1, "output_tokens": 1},
+}))
+""",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "judge model provider/judge-1 was not attested",
+            ):
+                run_suite(
+                    skill_path=skill,
+                    output_dir=root / "run",
+                    model="provider/model-1",
+                    trials=1,
+                    harness="codex",
+                    harness_bin=str(fake),
+                    judge_model="provider/judge-1",
+                )
+            self.assertEqual(counter.read_text(encoding="utf-8"), "1")
+
+    def test_missing_target_attestation_stops_after_first_paid_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
+            fake = root / "fake-codex"
+            counter = root / "fake-codex.count"
+            fake.write_text(
+                """#!/usr/bin/env python3
+import json
+import sys
+from pathlib import Path
+
+if "--version" in sys.argv:
+    print("fake-codex 1.0")
+    raise SystemExit(0)
+
+counter = Path(sys.argv[0]).with_suffix(".count")
+count = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(count))
+print(json.dumps({
+    "type": "system",
+    "subtype": "init",
+    "model": "provider/model-1",
+    "session_id": "missing-rollout",
+}))
+print(json.dumps({"type": "thread.started", "thread_id": "missing-model"}))
+print(json.dumps({
+    "type": "item.completed",
+    "item": {"type": "agent_message", "text": "done"},
+}))
+print(json.dumps({
+    "type": "turn.completed",
+    "usage": {"input_tokens": 1, "output_tokens": 1},
+}))
+""",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "target model provider/model-1 was not attested",
+            ):
+                run_suite(
+                    skill_path=skill,
+                    output_dir=root / "run",
+                    model="provider/model-1",
+                    trials=1,
+                    harness="codex",
+                    harness_bin=str(fake),
+                )
+            self.assertEqual(counter.read_text(encoding="utf-8"), "1")
+
+    def test_wrong_judge_model_stops_after_first_paid_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["graders"] = [
+                {
+                    "name": "Judge completion",
+                    "type": "model_rubric",
+                    "rubric": "The response completes the task.",
+                }
+            ]
+            _write_json(suite_path, suite)
+            fake = root / "fake-codex"
+            counter = root / "fake-codex.count"
+            fake.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+if "--version" in sys.argv:
+    print("fake-codex 1.0")
+    raise SystemExit(0)
+
+counter = Path(sys.argv[0]).with_suffix(".count")
+count = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(count))
+rollout = (
+    Path(os.environ["CODEX_HOME"])
+    / "sessions/2026/08/02/rollout-wrong-model.jsonl"
+)
+rollout.parent.mkdir(parents=True, exist_ok=True)
+rollout.write_text(
+    json.dumps({
+        "type": "turn_context",
+        "payload": {"model": "provider/wrong-model"},
+    }) + "\\n",
+    encoding="utf-8",
+)
+print(json.dumps({
+    "type": "system",
+    "subtype": "init",
+    "model": "provider/wrong-model",
+    "session_id": "wrong-model",
+}))
+print(json.dumps({
+    "message": {
+        "role": "assistant",
+        "model": "provider/wrong-model",
+        "content": [{
+            "type": "text",
+            "text": '{"passed": true, "reason": "fixture passes"}',
+        }],
+    },
+}))
+""",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "requested judge model provider/judge-1 but attested provider/wrong-model",
+            ):
+                run_suite(
+                    skill_path=skill,
+                    output_dir=root / "run",
+                    model="provider/model-1",
+                    trials=1,
+                    harness="codex",
+                    harness_bin=str(fake),
+                    judge_model="provider/judge-1",
+                )
+            self.assertEqual(counter.read_text(encoding="utf-8"), "1")
+
+    def test_wrong_target_model_stops_after_first_paid_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
+            fake = root / "fake-codex"
+            counter = root / "fake-codex.count"
+            fake.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+if "--version" in sys.argv:
+    print("fake-codex 1.0")
+    raise SystemExit(0)
+
+counter = Path(sys.argv[0]).with_suffix(".count")
+count = int(counter.read_text()) + 1 if counter.exists() else 1
+counter.write_text(str(count))
+rollout = (
+    Path(os.environ["CODEX_HOME"])
+    / "sessions/2026/08/02/rollout-wrong-model.jsonl"
+)
+rollout.parent.mkdir(parents=True, exist_ok=True)
+rollout.write_text(
+    json.dumps({
+        "type": "turn_context",
+        "payload": {"model": "provider/wrong-model"},
+    }) + "\\n",
+    encoding="utf-8",
+)
+print(json.dumps({
+    "type": "system",
+    "subtype": "init",
+    "model": "provider/wrong-model",
+    "session_id": "wrong-model",
+}))
+print(json.dumps({
+    "message": {
+        "role": "assistant",
+        "model": "provider/wrong-model",
+        "content": [{"type": "text", "text": "done"}],
+    },
+}))
+""",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "requested target model provider/model-1 but attested provider/wrong-model",
+            ):
+                run_suite(
+                    skill_path=skill,
+                    output_dir=root / "run",
+                    model="provider/model-1",
+                    trials=1,
+                    harness="codex",
+                    harness_bin=str(fake),
+                )
+            self.assertEqual(counter.read_text(encoding="utf-8"), "1")
+
+    def test_codex_run_hashes_persisted_runtime_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["graders"] = [
+                {
+                    "name": "Judge completion",
+                    "type": "model_rubric",
+                    "rubric": "The response completes the task.",
+                }
+            ]
+            suite["evals"][0]["reference"]["response"] = "PASS"
+            _write_json(suite_path, suite)
+            fake = root / "fake-codex"
+            fake.write_text(
+                """#!/usr/bin/env python3
+import json
+import os
+import sys
+from pathlib import Path
+
+if "--version" in sys.argv:
+    print("fake-codex 1.0")
+    raise SystemExit(0)
+
+joined = " ".join(sys.argv)
+treatment = "$fixture-skill" in joined
+is_judge = "You are grading one agent response." in joined
+model = sys.argv[sys.argv.index("--model") + 1]
+thread_id = "fixture-thread"
+rollout = (
+    Path(os.environ["CODEX_HOME"])
+    / "sessions/2026/08/02/rollout-fixture-thread.jsonl"
+)
+rollout.parent.mkdir(parents=True, exist_ok=True)
+events = [
+    {"type": "turn_context", "payload": {"model": model}},
+    {
+        "type": "world_state",
+        "payload": {
+            "state": {
+                "host_skills": {
+                    "body": (
+                        "- fixture-skill: (file: "
+                        "/tmp/fixture-skill/SKILL.md)"
+                        if treatment
+                        else ""
+                    )
+                }
+            }
+        },
+    },
+]
+if treatment:
+    installed = Path.cwd() / ".agents/skills/fixture-skill/SKILL.md"
+    events.append({
+        "type": "response_item",
+        "payload": {
+            "type": "message",
+            "role": "user",
+            "content": [{
+                "type": "input_text",
+                "text": (
+                    "<skill>\\n<name>fixture-skill</name>\\n"
+                    f"<path>{installed}</path>\\n</skill>"
+                ),
+            }],
+        },
+    })
+rollout.write_text(
+    "\\n".join(json.dumps(event) for event in events) + "\\n",
+    encoding="utf-8",
+)
+print(json.dumps({"type": "thread.started", "thread_id": thread_id}))
+print(json.dumps({
+    "type": "item.completed",
+    "item": {
+        "type": "agent_message",
+        "text": (
+            '{"passed": true, "reason": "fixture passes"}'
+            if is_judge
+            else "PASS" if treatment else "FAIL"
+        ),
+    },
+}))
+print(json.dumps({
+    "type": "turn.completed",
+    "usage": {"input_tokens": 1, "output_tokens": 1},
+}))
+""",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            output = root / "run-codex-attested"
+            report = run_suite(
+                skill_path=skill,
+                output_dir=output,
+                model="provider/model-1",
+                trials=1,
+                harness="codex",
+                harness_bin=str(fake),
+                judge_model="provider/judge-1",
+            )
+            self.assertTrue(report["valid"])
+            manifest = json.loads(
+                (output / "run_manifest.json").read_text(encoding="utf-8")
+            )
+            treatment_record = manifest["trials"][0]["conditions"]["with_skill"]
+            self.assertEqual(treatment_record["actual_model"], "provider/model-1")
+            self.assertTrue(treatment_record["model_attested"])
+            self.assertRegex(
+                treatment_record["attestation_trace_sha256"],
+                r"^[0-9a-f]{64}$",
+            )
+            judge_record = treatment_record["judge_records"][0]
+            self.assertEqual(judge_record["actual_model"], "provider/judge-1")
+            self.assertRegex(
+                judge_record["attestation_trace_sha256"],
+                r"^[0-9a-f]{64}$",
+            )
+            reference_judge = manifest["reference_validation"][0][
+                "judge_records"
+            ][0]
+            reference_attestation = (
+                output / reference_judge["attestation_trace_path"]
+            )
+            original_reference_attestation = reference_attestation.read_text(
+                encoding="utf-8"
+            )
+            reference_attestation.write_text(
+                original_reference_attestation.replace(
+                    "provider/judge-1",
+                    "provider/judge-other",
+                ),
+                encoding="utf-8",
+            )
+            reference_judge["attestation_trace_sha256"] = _sha256(
+                reference_attestation
+            )
+            _write_json(output / "run_manifest.json", manifest)
+            mismatched_reference = aggregate(output)
+            self.assertFalse(mismatched_reference["valid"])
+            self.assertTrue(
+                any(
+                    "judge_model_mismatch" in reason
+                    for reason in mismatched_reference["invalid_reasons"]
+                )
+            )
+            reference_attestation.write_text(
+                original_reference_attestation,
+                encoding="utf-8",
+            )
+            reference_judge["attestation_trace_sha256"] = _sha256(
+                reference_attestation
+            )
+            saved_attestation_path = treatment_record["attestation_trace_path"]
+            saved_attestation_sha = treatment_record["attestation_trace_sha256"]
+            treatment_record["attestation_trace_path"] = ""
+            treatment_record["attestation_trace_sha256"] = ""
+            _write_json(output / "run_manifest.json", manifest)
+            missing_attestation = aggregate(output)
+            self.assertFalse(missing_attestation["valid"])
+            self.assertTrue(
+                any(
+                    "attestation_trace_missing" in reason
+                    for reason in missing_attestation["invalid_reasons"]
+                )
+            )
+            treatment_record["attestation_trace_path"] = saved_attestation_path
+            treatment_record["attestation_trace_sha256"] = saved_attestation_sha
+            treatment_record["skill_injection_attested"] = False
+            treatment_record["skill_explicitly_accessed"] = False
+            _write_json(output / "run_manifest.json", manifest)
+            reaggregated = aggregate(output)
+            self.assertTrue(reaggregated["runtime_attestation_complete"])
+            self.assertEqual(reaggregated["routing"]["explicit_accesses"], 1)
+            judge_attestation = output / judge_record["attestation_trace_path"]
+            original_judge_attestation = judge_attestation.read_text(
+                encoding="utf-8"
+            )
+            judge_attestation.write_text(
+                original_judge_attestation.replace(
+                    "provider/judge-1",
+                    "provider/judge-other",
+                ),
+                encoding="utf-8",
+            )
+            judge_record["attestation_trace_sha256"] = _sha256(
+                judge_attestation
+            )
+            _write_json(output / "run_manifest.json", manifest)
+            mismatched_judge = aggregate(output)
+            self.assertFalse(mismatched_judge["valid"])
+            self.assertTrue(
+                any(
+                    "judge_model_mismatch" in reason
+                    for reason in mismatched_judge["invalid_reasons"]
+                )
+            )
+            judge_attestation.write_text(
+                original_judge_attestation,
+                encoding="utf-8",
+            )
+            judge_record["attestation_trace_sha256"] = _sha256(
+                judge_attestation
+            )
+            attestation_trace = output / treatment_record["attestation_trace_path"]
+            attestation_trace.write_text(
+                attestation_trace.read_text(encoding="utf-8").replace(
+                    "provider/model-1",
+                    "provider/model-other",
+                ),
+                encoding="utf-8",
+            )
+            treatment_record["attestation_trace_sha256"] = _sha256(
+                attestation_trace
+            )
+            _write_json(output / "run_manifest.json", manifest)
+            mismatched = aggregate(output)
+            self.assertFalse(mismatched["valid"])
+            self.assertTrue(
+                any(
+                    "model_mismatch" in reason
+                    for reason in mismatched["invalid_reasons"]
+                )
+            )
+            attestation_trace.write_text(
+                attestation_trace.read_text(encoding="utf-8") + "{}\n",
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "attestation_trace_sha256"):
+                aggregate(output)
+
     def test_fake_runs_complete_for_every_selected_harness(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -992,7 +1830,9 @@ class EndToEndTests(unittest.TestCase):
             fake.write_text(
                 """#!/usr/bin/env python3
 import json
+import os
 import sys
+from pathlib import Path
 
 if "--version" in sys.argv:
     print("fake-harness 1.0")
@@ -1005,6 +1845,35 @@ treatment = (
     or "/fixture-skill" in joined
     or "$fixture-skill" in joined
 )
+if "CODEX_HOME" in os.environ:
+    rollout = (
+        Path(os.environ["CODEX_HOME"])
+        / "sessions/2026/08/02/rollout-fixture-session.jsonl"
+    )
+    rollout.parent.mkdir(parents=True, exist_ok=True)
+    events = [
+        {"type": "turn_context", "payload": {"model": "provider/model-1"}},
+    ]
+    if treatment:
+        installed = Path.cwd() / ".agents/skills/fixture-skill/SKILL.md"
+        events.append({
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": (
+                        "<skill>\\n<name>fixture-skill</name>\\n"
+                        f"<path>{installed}</path>\\n</skill>"
+                    ),
+                }],
+            },
+        })
+    rollout.write_text(
+        "\\n".join(json.dumps(event) for event in events) + "\\n",
+        encoding="utf-8",
+    )
 print(json.dumps({
     "type": "system",
     "subtype": "init",
@@ -1012,6 +1881,11 @@ print(json.dumps({
     "session_id": "fixture-session",
     "skills": ["fixture-skill"] if treatment else [],
 }))
+if treatment:
+    print(json.dumps({
+        "name": "skill",
+        "arguments": {"skill": "fixture-skill"},
+    }))
 print(json.dumps({
     "message": {
         "role": "assistant",
