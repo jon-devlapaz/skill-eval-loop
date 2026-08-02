@@ -22,6 +22,7 @@ from typing import Mapping, Sequence
 
 SCRIPT_PATH = Path(__file__).resolve()
 TERMINAL_STATES = {"completed", "failed", "cancelled", "invalid"}
+HERDR_ENV_OVERRIDE_KEYS = frozenset({"HOME", "CODEX_HOME", "HERMES_CONFIG"})
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -123,6 +124,14 @@ def _run_job(job_path: Path) -> int:
     result_path = Path(job["result_path"])
     timeout_seconds = float(job["timeout_seconds"])
     title = str(job["title"])
+    env_overrides = job.get("env_overrides", {})
+    if not isinstance(env_overrides, dict) or any(
+        key not in HERDR_ENV_OVERRIDE_KEYS or not isinstance(value, str)
+        for key, value in env_overrides.items()
+    ):
+        raise ValueError("Herdr job contains unsupported environment overrides")
+    process_env = os.environ.copy()
+    process_env.update(env_overrides)
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     stderr_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -134,7 +143,7 @@ def _run_job(job_path: Path) -> int:
     process = subprocess.Popen(
         command,
         cwd=cwd,
-        env=os.environ.copy(),
+        env=process_env,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -200,6 +209,10 @@ def _run_job(job_path: Path) -> int:
     return_code = process.wait()
     stdout_thread.join(timeout=2)
     stderr_thread.join(timeout=2)
+    if process.stdout is not None:
+        process.stdout.close()
+    if process.stderr is not None:
+        process.stderr.close()
     if timed_out:
         return_code = 124
     elif was_cancelled:
@@ -412,8 +425,20 @@ class HerdrEvalRun:
         trace_path: Path,
         stderr_path: Path,
     ) -> tuple[subprocess.CompletedProcess[str], bool]:
-        if env is not None and dict(env) != dict(os.environ):
-            raise ValueError("Herdr pane jobs do not support per-process environment drift")
+        inherited_env = dict(os.environ)
+        requested_env = dict(env) if env is not None else inherited_env
+        env_overrides = {
+            key: value
+            for key, value in requested_env.items()
+            if inherited_env.get(key) != value
+        }
+        removed_keys = set(inherited_env) - set(requested_env)
+        unsupported = (set(env_overrides) | removed_keys) - HERDR_ENV_OVERRIDE_KEYS
+        if unsupported or removed_keys:
+            names = sorted(unsupported | removed_keys)
+            raise ValueError(
+                f"Herdr pane job has unsupported environment changes: {names}"
+            )
         pane_id = str(getattr(self.panes, pane_role))
         self._job_number += 1
         job_root = self.jobs_dir / f"{self._job_number:04d}"
@@ -429,6 +454,7 @@ class HerdrEvalRun:
                 "result_path": str(result_path),
                 "timeout_seconds": timeout_seconds,
                 "title": title,
+                "env_overrides": dict(sorted(env_overrides.items())),
             },
         )
         worker_command = shlex.join(

@@ -230,8 +230,9 @@ def build_recommendation(
             else "different_model"
         ),
         "pilot_trials": 1,
-        "pilot_model_calls": base_calls + judge_calls,
-        "full_run_model_calls": None,
+        "pilot_harness_invocations": base_calls + judge_calls,
+        "full_run_harness_invocations": None,
+        "provider_model_calls": "unknown",
         "cost": "unknown unless the selected harness reports pricing",
         "confirmation_required": True,
         "limits": [

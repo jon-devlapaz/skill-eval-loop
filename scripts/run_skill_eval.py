@@ -308,6 +308,11 @@ def _run_condition(
             f"forced target skill {skill_path.name} was not explicitly accessed; "
             f"see {trace_path}"
         )
+    if timed_out or completed.returncode != 0:
+        status = "timed out" if timed_out else f"exited {completed.returncode}"
+        raise RuntimeError(
+            f"target invocation failed ({status}); retained trace at {trace_path}"
+        )
     attestation_trace = metadata.get("attestation_trace_path")
     response = str(metadata.get("final_response", ""))
     response_path.write_text(response + ("\n" if response else ""), encoding="utf-8")
@@ -382,13 +387,36 @@ def _run_condition(
     }
 
 
-def _assert_external_output(output_dir: Path) -> None:
+def _assert_external_output(output_dir: Path, skill_path: Path) -> None:
     skills_root = DEFAULT_EVAL_RUNS_ROOT.parent / "skills"
-    try:
-        output_dir.resolve().relative_to(skills_root.resolve())
-    except ValueError:
-        return
-    raise ValueError(f"evaluation output cannot live inside {skills_root}")
+    resolved_output = output_dir.resolve()
+    if resolved_output.is_relative_to(skills_root.resolve()):
+        raise ValueError(f"evaluation output cannot live inside {skills_root}")
+    if resolved_output.is_relative_to(skill_path.resolve()):
+        raise ValueError(
+            f"evaluation output cannot live inside evaluated skill {skill_path}"
+        )
+
+
+def _assert_fixture_isolation(suite: dict, skill_name: str) -> None:
+    suite_root = Path(suite["suite_root"])
+    native_roots = (Path(".agents/skills"), Path(".claude/skills"))
+    for case in suite["evals"]:
+        relative = case.get("fixture")
+        if not relative:
+            continue
+        fixture = safe_relative_path(
+            suite_root,
+            relative,
+            f"{case['id']}.fixture",
+        )
+        for native_root in native_roots:
+            contaminated = fixture / native_root / skill_name
+            if contaminated.exists() or contaminated.is_symlink():
+                raise ValueError(
+                    f"control fixture for {case['id']} contains target skill at "
+                    f"{contaminated}"
+                )
 
 
 def plan_run(
@@ -415,11 +443,12 @@ def plan_run(
     suite = load_suite(skill_path, evals_path)
     if harness not in HARNESS_NAMES:
         raise ValueError(f"harness must be one of {list(HARNESS_NAMES)}")
+    _assert_fixture_isolation(suite, skill_path.name)
     if pi_bin and harness != "pi":
         raise ValueError("--pi-bin can only be used with --harness pi")
     if observer not in OBSERVERS:
         raise ValueError(f"observer must be one of {sorted(OBSERVERS)}")
-    _assert_external_output(output_dir)
+    _assert_external_output(output_dir, skill_path)
     model_rubric_count = sum(
         sum(grader["type"] == "model_rubric" for grader in case["graders"])
         for case in suite["evals"]
@@ -445,11 +474,12 @@ def plan_run(
         "trials_per_case": trials,
         "case_count": len(suite["evals"]),
         "pair_count": len(suite["evals"]) * trials,
-        "model_calls": {
-            "base": base_calls,
+        "harness_invocations": {
+            "target": base_calls,
             "judge": judge_calls,
             "total": base_calls + judge_calls,
         },
+        "provider_model_calls": "unknown",
         "execution_order": {
             "policy": "counterbalanced_by_trial",
             "odd_trials": list(condition_order(1)),

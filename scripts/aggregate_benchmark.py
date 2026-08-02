@@ -132,6 +132,8 @@ def _condition_record(
     record: object,
     condition: str,
     pair_label: str,
+    expected_case_id: str,
+    expected_trial: int,
     requested_model: str,
     judge_model: str | None,
     harness: str,
@@ -143,6 +145,11 @@ def _condition_record(
         raise ValueError(f"{label} is missing")
     if record.get("condition") != condition:
         raise ValueError(f"{label}.condition does not match its manifest key")
+    if (
+        record.get("case_id") != expected_case_id
+        or record.get("trial") != expected_trial
+    ):
+        raise ValueError(f"{label} does not match its enclosing pair")
     trace_path = _require_hash(root, record, "trace", label)
     attestation_trace = None
     if record.get("attestation_trace_path"):
@@ -196,28 +203,23 @@ def _condition_record(
         if skill_payload_sha256(installed) != skill_sha256:
             raise ValueError(f"{label} installed payload differs from evaluated skill")
 
-    metadata = (
-        trace_metadata(
-            trace_path,
-            skill_name,
-            installed,
-            harness=harness,
-            requested_model=requested_model,
-            attestation_trace_path=attestation_trace,
-        )
-        if attestation_trace
-        else None
+    metadata = trace_metadata(
+        trace_path,
+        skill_name,
+        installed,
+        harness=harness,
+        requested_model=requested_model,
+        attestation_trace_path=attestation_trace,
     )
-    if harness == "codex" and metadata is None:
+    if harness == "codex" and attestation_trace is None:
         invalid.append("attestation_trace_missing")
-    if metadata is not None:
-        attested_model = metadata.get("actual_model")
-        if metadata.get("model_attested") is not True:
-            invalid.append("model_not_attested")
-        if not model_matches(requested_model, attested_model):
-            invalid.append("model_mismatch")
-        if not model_matches(str(record.get("actual_model", "")), attested_model):
-            invalid.append("manifest_model_mismatch")
+    attested_model = metadata.get("actual_model")
+    if metadata.get("model_attested") is not True:
+        invalid.append("model_not_attested")
+    if not model_matches(requested_model, attested_model):
+        invalid.append("model_mismatch")
+    if not model_matches(str(record.get("actual_model", "")), attested_model):
+        invalid.append("manifest_model_mismatch")
 
     return {
         "success": task_success and not {"timeout", "runtime_error"} & set(invalid),
@@ -231,19 +233,9 @@ def _condition_record(
         "expected_skill_loading": record.get("expected_skill_loading"),
         "skill_injection_attested": (
             metadata.get("skill_injection_attested") is True
-            if metadata
-            else record.get("skill_injection_attested") is True
         ),
         "skill_explicitly_accessed": (
             metadata.get("skill_explicitly_accessed") is True
-            if metadata
-            else (
-                record.get(
-                    "skill_explicitly_accessed",
-                    record.get("skill_loaded"),
-                )
-                is True
-            )
         ),
         "duration_seconds": record.get("duration_seconds"),
         "total_tokens": record.get("total_tokens"),
@@ -281,6 +273,28 @@ def aggregate(run_dir: Path) -> dict:
         raise FileNotFoundError(f"suite snapshot does not exist: {suite_path}")
     if _sha256_file(suite_path) != manifest.get("suite_sha256"):
         raise ValueError("manifest.suite_sha256 does not match suite snapshot")
+    suite_snapshot = json.loads(suite_path.read_text(encoding="utf-8"))
+    cases = suite_snapshot.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("suite snapshot must contain cases")
+    case_ids = [
+        case.get("id") if isinstance(case, dict) else None
+        for case in cases
+    ]
+    if any(not isinstance(case_id, str) or not case_id for case_id in case_ids):
+        raise ValueError("suite snapshot cases must have ids")
+    if len(case_ids) != len(set(case_ids)):
+        raise ValueError("suite snapshot case ids must be unique")
+    trials_per_case = manifest.get("trials_per_case")
+    if type(trials_per_case) is not int or trials_per_case < 1:
+        raise ValueError("manifest.trials_per_case must be a positive integer")
+    if manifest.get("case_count") != len(case_ids):
+        raise ValueError("manifest.case_count does not match suite snapshot")
+    expected_pairs = {
+        (case_id, trial)
+        for case_id in case_ids
+        for trial in range(1, trials_per_case + 1)
+    }
 
     provenance_path = manifest.get("provenance_path")
     if provenance_path:
@@ -333,8 +347,11 @@ def aggregate(run_dir: Path) -> dict:
     trials = manifest.get("trials")
     if not isinstance(trials, list) or not trials:
         raise ValueError("manifest.trials must be a non-empty list")
-    if manifest.get("pair_count") != len(trials):
-        raise ValueError("manifest.pair_count does not match trials")
+    if (
+        manifest.get("pair_count") != len(expected_pairs)
+        or len(trials) != len(expected_pairs)
+    ):
+        raise ValueError("manifest does not contain the complete case/trial matrix")
     counterbalanced = manifest.get("execution_order") == "counterbalanced_by_trial"
 
     seen_pairs: set[tuple[str, int]] = set()
@@ -398,6 +415,8 @@ def aggregate(run_dir: Path) -> dict:
                 record=conditions[condition],
                 condition=condition,
                 pair_label=pair_label,
+                expected_case_id=case_id,
+                expected_trial=trial,
                 requested_model=requested_model,
                 judge_model=judge_model if isinstance(judge_model, str) else None,
                 harness=harness,
@@ -498,6 +517,9 @@ def aggregate(run_dir: Path) -> dict:
             else "tied_fail"
         )
         pair_outcomes[outcome] += 1
+
+    if seen_pairs != expected_pairs:
+        raise ValueError("manifest does not contain the complete case/trial matrix")
 
     invalid_reasons.extend(
         reason

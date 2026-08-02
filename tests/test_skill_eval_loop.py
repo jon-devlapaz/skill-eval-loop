@@ -20,8 +20,8 @@ sys.path.insert(0, str(SCRIPTS))
 from aggregate_benchmark import aggregate  # noqa: E402
 from audit_suite import audit  # noqa: E402
 from eval_runtime import HeadlessEvalRun  # noqa: E402
-from eval_spec import canonical_sha256, grade_case  # noqa: E402
-from herdr_runtime import HerdrEvalRun, PaneSet  # noqa: E402
+from eval_spec import canonical_sha256, grade_case, load_suite  # noqa: E402
+from herdr_runtime import HerdrEvalRun, PaneSet, _run_job  # noqa: E402
 from model_grader import _parse_grade  # noqa: E402
 from process_control import CapturedKeyboardInterrupt, run_captured  # noqa: E402
 from recommend_models import (  # noqa: E402
@@ -30,7 +30,7 @@ from recommend_models import (  # noqa: E402
     infer_tier,
     parse_pi_models,
 )
-from run_skill_eval import condition_order, plan_run, run_suite  # noqa: E402
+from run_skill_eval import _run_condition, condition_order, plan_run, run_suite  # noqa: E402
 from runtime_adapters import (  # noqa: E402
     HARNESS_NAMES,
     build_invocation,
@@ -155,7 +155,8 @@ openai-codex gpt-5.6-sol 272K 128K yes yes
         )
         self.assertEqual(report["recommended_target"], "provider/terra")
         self.assertEqual(report["recommended_judge"], "provider/sol")
-        self.assertEqual(report["pilot_model_calls"], 14)
+        self.assertEqual(report["pilot_harness_invocations"], 14)
+        self.assertEqual(report["provider_model_calls"], "unknown")
         self.assertTrue(report["confirmation_required"])
 
     def test_portability_recommends_a_cross_tier_matrix(self) -> None:
@@ -233,7 +234,19 @@ def _make_record(
     trace = outputs / "trace.jsonl"
     response = outputs / "response.md"
     grading = condition_dir / "grading.json"
-    trace.write_text("{}\n", encoding="utf-8")
+    trace.write_text(
+        json.dumps(
+            {
+                "type": "system",
+                "subtype": "init",
+                "model": model,
+                "session_id": f"fixture-{condition}-{trial}",
+                "skills": [skill_name] if condition == "with_skill" else [],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     response.write_text("done\n" if passed else "not done\n", encoding="utf-8")
     _write_json(grading, _grading(passed))
     installed = ""
@@ -311,7 +324,14 @@ def _make_run(root: Path, outcomes: list[tuple[bool, bool]]) -> None:
         / skill_name
     )
     suite = root / "suite_snapshot.json"
-    _write_json(suite, {"schema_version": 2, "skill_name": skill_name})
+    _write_json(
+        suite,
+        {
+            "schema_version": 2,
+            "skill_name": skill_name,
+            "cases": [{"id": "case"}],
+        },
+    )
     _write_json(
         root / "run_manifest.json",
         {
@@ -324,6 +344,8 @@ def _make_run(root: Path, outcomes: list[tuple[bool, bool]]) -> None:
             "provenance_sha256": None,
             "requested_model": model,
             "harness": "pi",
+            "case_count": 1,
+            "trials_per_case": len(pairs),
             "pair_count": len(pairs),
             "trials": pairs,
         },
@@ -445,6 +467,35 @@ class SuiteAuditTests(unittest.TestCase):
             self.assertEqual(report["errors"], ["provenance_hash_mismatch"])
 
 
+class SuiteValidationTests(unittest.TestCase):
+    def test_duplicate_grader_names_are_rejected_before_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema2_skill(Path(temp))
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            duplicate = dict(suite["evals"][0]["graders"][0])
+            suite["evals"][0]["graders"].append(duplicate)
+            _write_json(suite_path, suite)
+            with self.assertRaisesRegex(ValueError, "duplicate grader name"):
+                load_suite(skill)
+
+    def test_schema_two_model_grader_requires_rubric(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema2_skill(Path(temp))
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["graders"] = [
+                {
+                    "name": "criteria only",
+                    "type": "model_rubric",
+                    "criteria": [{"requirement": "Do it"}],
+                }
+            ]
+            _write_json(suite_path, suite)
+            with self.assertRaisesRegex(ValueError, "rubric"):
+                load_suite(skill)
+
+
 class RuntimeTests(unittest.TestCase):
     def test_model_identity_rejects_suffix_collisions(self) -> None:
         self.assertTrue(
@@ -460,6 +511,29 @@ class RuntimeTests(unittest.TestCase):
             HARNESS_NAMES,
             ("hermes", "claude-code", "codex", "pi"),
         )
+
+    def test_skill_payload_rejects_symlinked_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
+            secret = root / "outside.txt"
+            secret.write_text("do not expose\n", encoding="utf-8")
+            (skill / "references").mkdir()
+            (skill / "references" / "linked.txt").symlink_to(secret)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                skill_payload_sha256(skill)
+
+    def test_skill_payload_digest_includes_executable_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema2_skill(Path(temp))
+            script = skill / "scripts" / "run.sh"
+            script.parent.mkdir()
+            script.write_text("#!/bin/sh\n", encoding="utf-8")
+            script.chmod(0o644)
+            plain_digest = skill_payload_sha256(skill)
+            script.chmod(0o755)
+            executable_digest = skill_payload_sha256(skill)
+            self.assertNotEqual(plain_digest, executable_digest)
 
     def test_each_harness_isolates_the_skill_to_treatment(self) -> None:
         expected_markers = {
@@ -1003,9 +1077,10 @@ class PlanningTests(unittest.TestCase):
             self.assertTrue(Path(report["output_dir"]).is_relative_to(DEFAULT_EVAL_RUNS_ROOT))
             self.assertFalse(output.exists())
             self.assertEqual(
-                report["model_calls"],
-                {"base": 6, "judge": 0, "total": 6},
+                report["harness_invocations"],
+                {"target": 6, "judge": 0, "total": 6},
             )
+            self.assertEqual(report["provider_model_calls"], "unknown")
             self.assertEqual(report["observer"]["kind"], "headless")
             self.assertEqual(
                 report["execution_order"]["policy"],
@@ -1039,6 +1114,43 @@ class PlanningTests(unittest.TestCase):
                     trials=1,
                 )
 
+    @patch("run_skill_eval.resolve_harness", return_value=("/usr/local/bin/pi", "1.0"))
+    def test_output_inside_external_target_skill_is_rejected(self, _resolve) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema2_skill(Path(temp))
+            with self.assertRaisesRegex(ValueError, "evaluated skill"):
+                plan_run(
+                    skill_path=skill,
+                    output_dir=skill / "generated-run",
+                    model="provider/model-1",
+                    trials=1,
+                )
+
+    @patch("run_skill_eval.resolve_harness", return_value=("/usr/local/bin/fake", "1.0"))
+    def test_control_fixture_rejects_project_local_target_skill(self, _resolve) -> None:
+        for harness, native_root in (
+            ("codex", ".agents/skills"),
+            ("claude-code", ".claude/skills"),
+        ):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as temp:
+                skill = _make_schema2_skill(Path(temp))
+                fixture = skill / "fixtures" / "contaminated"
+                hidden_skill = fixture / native_root / skill.name
+                hidden_skill.mkdir(parents=True)
+                (hidden_skill / "SKILL.md").write_text("# Hidden\n", encoding="utf-8")
+                suite_path = skill / "evals" / "evals.json"
+                suite = json.loads(suite_path.read_text(encoding="utf-8"))
+                suite["evals"][0]["fixture"] = "fixtures/contaminated"
+                _write_json(suite_path, suite)
+                with self.assertRaisesRegex(ValueError, "control fixture"):
+                    plan_run(
+                        skill_path=skill,
+                        output_dir=Path(temp) / "run",
+                        model="provider/model-1",
+                        trials=1,
+                        harness=harness,
+                    )
+
     @patch("run_skill_eval._run_condition")
     @patch(
         "run_skill_eval._validate_references",
@@ -1070,6 +1182,55 @@ class PlanningTests(unittest.TestCase):
                 )
             run_condition.assert_not_called()
             self.assertEqual(fake.finishes, ["failed"])
+
+    def test_failed_target_stops_before_model_grading(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
+            suite = load_suite(skill)
+            case = suite["evals"][0]
+            case["_tool_profile"] = suite["tool_profile"]
+            case["_activation_mode"] = suite["activation_mode"]
+            eval_run = MagicMock()
+
+            def failed_capture(*_args, trace_path, stderr_path, **_kwargs):
+                trace_path.write_text('{"model":"provider/model-1"}\n', encoding="utf-8")
+                stderr_path.write_text("failed\n", encoding="utf-8")
+                return (
+                    subprocess.CompletedProcess(["pi"], 1, "", "failed"),
+                    False,
+                )
+
+            eval_run.run_captured.side_effect = failed_capture
+            metadata = {
+                "actual_model": "provider/model-1",
+                "model_attested": True,
+                "session_id": "failed-session",
+                "final_response": "partial",
+                "skill_injection_attested": False,
+                "skill_explicitly_accessed": False,
+            }
+            with (
+                patch("run_skill_eval.trace_metadata", return_value=metadata),
+                patch("run_skill_eval._model_graders", return_value=({}, [])) as graders,
+                self.assertRaisesRegex(RuntimeError, "target invocation failed"),
+            ):
+                _run_condition(
+                    root=root / "run",
+                    skill_path=skill,
+                    case=case,
+                    suite_root=Path(suite["suite_root"]),
+                    trial=1,
+                    condition="without_skill",
+                    harness="pi",
+                    executable="pi",
+                    model="provider/model-1",
+                    timeout_seconds=1,
+                    judge_model="provider/judge-1",
+                    judge_timeout_seconds=1,
+                    eval_run=eval_run,
+                )
+            graders.assert_not_called()
 
     @patch("run_skill_eval.resolve_harness", return_value=("/usr/local/bin/pi", "1.0"))
     def test_herdr_observer_requires_environment_before_creating_output(
@@ -1159,6 +1320,81 @@ class PlanningTests(unittest.TestCase):
                 calls,
             )
             self.assertEqual(calls[-1], ("workspace", "focus", "w1"))
+
+    def test_herdr_job_serializes_only_supported_environment_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            run = HerdrEvalRun(
+                workspace_id="w1",
+                workspace_label="eval:test:run",
+                panes=PaneSet("w1:p1", "w1:p2", "w1:p3", "w1:p4"),
+                output_dir=root,
+            )
+            run.status_path.parent.mkdir(parents=True)
+            run.status_path.write_text("", encoding="utf-8")
+
+            def fake_cli(*args: str) -> dict:
+                if args[:3] == ("pane", "run", "w1:p2"):
+                    result = root / "herdr" / "jobs" / "0001.result.json"
+                    _write_json(
+                        result,
+                        {
+                            "returncode": 0,
+                            "timed_out": False,
+                            "duration_seconds": 0.01,
+                        },
+                    )
+                return {}
+
+            env = os.environ.copy()
+            env["HOME"] = str(root / "isolated-home")
+            env["CODEX_HOME"] = str(root / "codex-home")
+            with patch.object(run, "_cli", side_effect=fake_cli):
+                run.run_captured(
+                    ["fixture"],
+                    cwd=root,
+                    env=env,
+                    timeout_seconds=1,
+                    pane_role="control",
+                    title="fixture",
+                    trace_path=root / "trace.jsonl",
+                    stderr_path=root / "stderr.txt",
+                )
+            job = json.loads(
+                (root / "herdr/jobs/0001.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                job["env_overrides"],
+                {"CODEX_HOME": str(root / "codex-home"), "HOME": str(root / "isolated-home")},
+            )
+
+    def test_herdr_worker_applies_serialized_environment_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            job_path = root / "job.json"
+            trace = root / "trace.jsonl"
+            result = root / "result.json"
+            expected = str(root / "hermes-config.json")
+            _write_json(
+                job_path,
+                {
+                    "command": [
+                        sys.executable,
+                        "-c",
+                        "import json,os; print(json.dumps({'value': os.environ.get('HERMES_CONFIG')}))",
+                    ],
+                    "cwd": str(root),
+                    "trace_path": str(trace),
+                    "stderr_path": str(root / "stderr.txt"),
+                    "result_path": str(result),
+                    "timeout_seconds": 1,
+                    "title": "fixture",
+                    "env_overrides": {"HERMES_CONFIG": expected},
+                },
+            )
+            self.assertEqual(_run_job(job_path), 0)
+            event = json.loads(trace.read_text(encoding="utf-8"))
+            self.assertEqual(event["value"], expected)
 
     @patch("herdr_runtime.HerdrEvalRun._cli", return_value={})
     def test_cancel_targets_only_the_active_eval_pane(self, cli) -> None:
@@ -2093,8 +2329,11 @@ class AggregateTests(unittest.TestCase):
             manifest_path = root / "run_manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             treatment = manifest["trials"][0]["conditions"]["with_skill"]
-            treatment["skill_injection_attested"] = False
-            treatment["skill_explicitly_accessed"] = False
+            trace = root / treatment["trace_path"]
+            event = json.loads(trace.read_text(encoding="utf-8"))
+            event["skills"] = []
+            trace.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            treatment["trace_sha256"] = _sha256(trace)
             _write_json(manifest_path, manifest)
             report = aggregate(root)
             self.assertTrue(report["artifact_valid"])
@@ -2110,7 +2349,11 @@ class AggregateTests(unittest.TestCase):
             manifest_path = root / "run_manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             control = manifest["trials"][0]["conditions"]["without_skill"]
-            control["skill_injection_attested"] = True
+            trace = root / control["trace_path"]
+            event = json.loads(trace.read_text(encoding="utf-8"))
+            event["skills"] = ["candidate"]
+            trace.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            control["trace_sha256"] = _sha256(trace)
             _write_json(manifest_path, manifest)
             report = aggregate(root)
             self.assertTrue(report["artifact_valid"])
@@ -2145,7 +2388,16 @@ class AggregateTests(unittest.TestCase):
             manifest["activation_mode"] = "autonomous"
             treatment = manifest["trials"][0]["conditions"]["with_skill"]
             treatment["skill_activation"] = "available_for_autonomous_selection"
-            treatment["skill_explicitly_accessed"] = True
+            trace = root / treatment["trace_path"]
+            trace.write_text(
+                trace.read_text(encoding="utf-8")
+                + json.dumps(
+                    {"name": "skill", "arguments": {"skill": "candidate"}}
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            treatment["trace_sha256"] = _sha256(trace)
             _write_json(manifest_path, manifest)
             report = aggregate(root)
             self.assertTrue(report["mechanism_valid"])
@@ -2167,6 +2419,66 @@ class AggregateTests(unittest.TestCase):
             )
             trace.write_text("tampered\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "does not match"):
+                aggregate(root)
+
+    def test_non_codex_trace_is_reparsed_during_aggregation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_run(root, [(False, True)])
+            manifest_path = root / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            control = manifest["trials"][0]["conditions"]["without_skill"]
+            trace = root / control["trace_path"]
+            trace.write_text(
+                json.dumps(
+                    {
+                        "type": "system",
+                        "subtype": "init",
+                        "model": "provider/wrong-model",
+                        "session_id": "tampered",
+                        "skills": [],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            control["trace_sha256"] = _sha256(trace)
+            _write_json(manifest_path, manifest)
+            report = aggregate(root)
+            self.assertFalse(report["valid"])
+            self.assertTrue(
+                any("model_mismatch" in reason for reason in report["invalid_reasons"])
+            )
+
+    def test_aggregation_requires_complete_case_trial_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_run(root, [(False, True), (False, True)])
+            suite_path = root / "suite_snapshot.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["cases"] = [{"id": "case"}]
+            _write_json(suite_path, suite)
+            manifest_path = root / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["suite_sha256"] = _sha256(suite_path)
+            manifest["case_count"] = 1
+            manifest["trials_per_case"] = 2
+            manifest["trials"] = manifest["trials"][:1]
+            manifest["pair_count"] = 1
+            _write_json(manifest_path, manifest)
+            with self.assertRaisesRegex(ValueError, "complete case/trial matrix"):
+                aggregate(root)
+
+    def test_condition_record_identity_must_match_enclosing_pair(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_run(root, [(False, True)])
+            manifest_path = root / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            treatment = manifest["trials"][0]["conditions"]["with_skill"]
+            treatment["case_id"] = "different-case"
+            _write_json(manifest_path, manifest)
+            with self.assertRaisesRegex(ValueError, "does not match its enclosing pair"):
                 aggregate(root)
 
     def test_inconsistent_grading_summary_fails(self) -> None:

@@ -357,6 +357,21 @@ def load_suite(skill_path: Path, evals_path: Path | None = None) -> dict[str, An
             _validate_grader(grader, label, grader_index)
             for grader_index, grader in enumerate(graders, start=1)
         ]
+        grader_names = [grader["name"] for grader in normalized["graders"]]
+        if len(grader_names) != len(set(grader_names)):
+            raise ValueError(f"{label} has a duplicate grader name")
+        if schema_version == 2:
+            for grader_index, grader in enumerate(
+                normalized["graders"],
+                start=1,
+            ):
+                if grader["type"] == "model_rubric" and not (
+                    isinstance(grader.get("rubric"), str)
+                    and grader["rubric"].strip()
+                ):
+                    raise ValueError(
+                        f"{label}.graders[{grader_index}].rubric must be non-empty"
+                    )
         if schema_version == 3:
             for grader_index, grader in enumerate(
                 normalized["graders"],

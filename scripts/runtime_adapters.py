@@ -87,16 +87,28 @@ def resolve_pi(executable: str | None = None) -> tuple[str, str]:
 
 
 def _payload_files(source: Path) -> list[Path]:
+    if source.is_symlink():
+        raise ValueError(f"skill payload root must not be a symlink: {source}")
     source = source.resolve()
-    return sorted(
-        path
-        for path in source.rglob("*")
-        if path.is_file()
-        and path.suffix != ".pyc"
-        and not any(
-            part in PAYLOAD_EXCLUDES for part in path.relative_to(source).parts
-        )
-    )
+    files: list[Path] = []
+    for path in source.rglob("*"):
+        if path.is_symlink():
+            raise ValueError(f"symlinked skill payload entry is not allowed: {path}")
+        relative = path.relative_to(source)
+        if path.suffix == ".pyc" or any(
+            part in PAYLOAD_EXCLUDES for part in relative.parts
+        ):
+            continue
+        if not path.is_file():
+            continue
+        try:
+            path.resolve().relative_to(source)
+        except ValueError as exc:
+            raise ValueError(
+                f"skill payload entry resolves outside its root: {path}"
+            ) from exc
+        files.append(path)
+    return sorted(files)
 
 
 def skill_payload_sha256(source: Path) -> str:
@@ -104,6 +116,8 @@ def skill_payload_sha256(source: Path) -> str:
     digest = hashlib.sha256()
     for path in _payload_files(source):
         digest.update(path.relative_to(source).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(b"x" if path.stat().st_mode & 0o111 else b"-")
         digest.update(b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")

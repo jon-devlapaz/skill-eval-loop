@@ -24,15 +24,18 @@ Require:
 
 Audit, dry-run, and the default headless live run do not require Herdr.
 
-Before live trials, calculate and state the exact model-call count:
+Before live trials, calculate and state the exact harness-invocation count:
 
 ```text
-base calls  = 2 × trials × cases
-judge calls = Σ(model-rubric graders for each case × (1 + 2 × trials))
-total calls = base calls + judge calls
+target invocations = 2 × trials × cases
+judge invocations  = Σ(model-rubric graders for each case × (1 + 2 × trials))
+total invocations  = target invocations + judge invocations
 ```
 
-Wait for explicit authorization of that total before starting paid trials.
+One agent-harness invocation may make multiple provider model calls when tools
+are used, so the exact provider-call count and cost are unknown unless the
+harness reports them. Wait for explicit authorization of the invocation total
+and this uncertainty before starting paid trials.
 
 In the commands below, set `SKILL_EVAL_DIR` to the absolute path of this
 installed skill directory:
@@ -58,7 +61,8 @@ apply:
 3. target model;
 4. judge model, only when model rubrics require one;
 5. observation mode;
-6. authorization for the exact paid pilot call count;
+6. authorization for the pilot invocation count and unknown provider-call
+   total;
 7. whether to scale after a valid pilot.
 
 Setup remediation interrupts this sequence. Ask only whether to apply the
@@ -150,7 +154,8 @@ failed check and exact proposed fix, then wait for confirmation before making
 any change. Rerun the read-only check afterward.
 
 Complete when: the user confirms exact pinned model ids and understands the
-pilot call count, tier heuristic, cost uncertainty, and judge limitations.
+pilot invocation count, tier heuristic, provider-call and cost uncertainty,
+and judge limitations.
 
 5. Choose the observation mode, then inspect the run plan.
 
@@ -184,18 +189,21 @@ The default output must resolve below:
 `skills/` directory.
 
 Complete when: the plan names the requested skill, selected harness, exact
-model, trial count, pair count, exact call count, counterbalanced execution
-order, observer, and an output path outside `skills/`. Dry-run must not create
-files, workspaces, or panes.
+model, trial count, pair count, exact harness-invocation count, counterbalanced
+execution order, observer, and an output path outside `skills/`. Dry-run must
+not create files, workspaces, or panes.
 
 Present the validated plan as a compact two-column Markdown table rather than
 a bullet list. Use rows for harness, target model, judge model when present,
 trials per case, cases, paired trials, observation, credential status, target
-calls, judge calls, and total paid calls. Bold the total paid-call value. State
-above the table that the dry run created no model calls or artifacts.
+invocations, judge invocations, and total harness invocations. Bold the total
+invocation value. State above the table that the dry run created no provider
+model calls or artifacts, and that the live provider-call count and cost are
+unknown.
 
 After the table, wait for explicit authorization of the selected observation
-mode and exact pilot call count before the live command.
+mode, pilot invocation count, and provider-call uncertainty before the live
+command.
 
 6. Run the paired pilot:
 
@@ -234,12 +242,13 @@ even trial: with-skill → without-skill
 ```
 
 The runner validates references before target trials and retains provenance
-and hashes. After every paid call, it verifies trace-attested model identity
-before starting any downstream call. A missing or mismatched judge identity
-therefore stops during the first reference judge; without model rubrics, a
-missing or mismatched target identity stops after the first target call. For a
-forced Codex treatment, the runner also requires trace-visible access to the
-full structured skill payload before starting downstream grading.
+and hashes. After every harness invocation, it verifies trace-attested model
+identity before starting any downstream invocation. A missing or mismatched
+judge identity therefore stops during the first reference judge; without model
+rubrics, a missing or mismatched target identity stops after the first target
+invocation. For a forced Codex treatment, the runner also requires
+trace-visible access to the full structured skill payload before starting
+downstream grading.
 
 Complete when: the pilot pair finishes and `run_manifest.json` plus
 `benchmark.json` exist. For an invalid run, preserve its evidence, report the
