@@ -1,24 +1,28 @@
 ---
 name: skill-eval-loop
-description: Run a local paired diagnostic in Hermes, Claude Code, Codex, or Pi, headlessly or with Herdr observation, independently authoring missing eval suites and comparing outcomes with and without one explicitly loaded agent skill.
+description: >
+  Paired diagnostic of one agent skill — same task with and without the skill.
+  Use when measuring whether a skill improves local outcomes under Hermes, Claude
+  Code, Codex, or Pi, headlessly or with Herdr observation; also when independently
+  authoring a missing eval suite before that comparison.
 ---
 
 # Skill Eval Loop
 
-Run one paired diagnostic: hold prompts, fixtures, model, tools, harness, and
-trial count constant while changing only explicit availability of the target
-skill. Forced suites activate the skill before the task. Autonomous schema-3
-suites leave the task unchanged and score trace-visible skill selection.
+Run one **paired diagnostic**: hold prompts, fixtures, model, tools, harness,
+and trial count constant; vary only explicit availability of the target skill.
+Forced suites activate the skill before the task. Autonomous schema-3 suites
+leave the task unchanged and score trace-visible skill selection.
 
 ## Preconditions
 
 Require:
 
 - a target directory containing `SKILL.md`;
-- an existing `evals/evals.json` or the ability to launch a fresh subagent to
-  author it;
+- an existing `evals/evals.json`, a supplied `--evals-path`, or authority to
+  launch a fresh subagent to author the suite;
 - references that pass every declared grader;
-- an exact model identifier;
+- an exact model identifier before live trials;
 - a working executable and authentication for the selected harness;
 - a Herdr-managed pane with `HERDR_ENV=1` only for `--observer herdr`.
 
@@ -32,95 +36,89 @@ judge invocations  = Σ(model-rubric graders for each case × (1 + 2 × trials))
 total invocations  = target invocations + judge invocations
 ```
 
-One agent-harness invocation may make multiple provider model calls when tools
-are used, so the exact provider-call count and cost are unknown unless the
-harness reports them. Wait for explicit authorization of the invocation total
-and this uncertainty before starting paid trials.
+One harness invocation may make multiple provider model calls when tools are
+used, so exact provider-call count and cost stay unknown unless the harness
+reports them. Wait for explicit authorization of the invocation total and this
+uncertainty before starting paid trials.
 
-In the commands below, set `SKILL_EVAL_DIR` to the absolute path of this
-installed skill directory:
+Set `SKILL_EVAL_DIR` to the absolute path of this installed skill directory:
 
 ```bash
 SKILL_EVAL_DIR=/absolute/path/to/skill-eval-loop
 ```
 
+## Ask one at a time
+
+Ask exactly one open question per message and wait for the answer. Skip topics
+the user already settled. Setup remediation may interrupt: ask only whether to
+apply the stated fix, wait, then resume the topic list.
+
+Order:
+
+1. execution harness
+2. evaluation goal
+3. target model
+4. judge model (only when model rubrics require one)
+5. observation mode
+6. authorization for the pilot invocation count and provider-call uncertainty
+7. whether to scale after a valid pilot
+
 ## Workflow
 
-### Conversation contract
+### 1. Choose the execution harness
 
-Ask exactly one question in each message and wait for the answer before asking
-the next one. Never bundle harness, goal, model, judge, trial count, observer,
-or authorization into one prompt. If the user already supplied the next choice,
-record it and continue without asking it again.
+Name every supported harness before the first evaluation command:
 
-Use this order, skipping questions the user has already answered or that do not
-apply:
+- `hermes` — Hermes Agent
+- `claude-code` — Claude Code
+- `codex` — OpenAI Codex CLI
+- `pi` — Pi coding agent
 
-1. execution harness;
-2. evaluation goal;
-3. target model;
-4. judge model, only when model rubrics require one;
-5. observation mode;
-6. authorization for the pilot invocation count and unknown provider-call
-   total;
-7. whether to scale after a valid pilot.
+Ask which to use unless the request already selects one. Match the harness
+running this skill only when the user chose it. Confirm that harness's
+executable and authentication, and pass `--harness` on dry-run and live
+commands.
 
-Setup remediation interrupts this sequence. Ask only whether to apply the
-stated fix, wait for the answer, then resume at the interrupted step.
+Complete when: `--harness` is fixed and the executable/auth check has passed
+or a remediation proposal is waiting.
 
-1. Choose the execution harness.
-
-Before running any evaluation command, always alert the user to all supported
-harnesses:
-
-- `hermes` — Hermes Agent;
-- `claude-code` — Claude Code;
-- `codex` — OpenAI Codex CLI;
-- `pi` — Pi coding agent.
-
-Ask which harness they want unless their request already selects one. Do not
-silently default to the harness running this skill. Confirm that harness's
-executable and authentication are available, and record the choice with
-`--harness` in both dry-run and live commands.
-
-2. Independently author a missing suite.
+### 2. Independently author a missing suite
 
 If `evals/evals.json` is absent and no `--evals-path` was supplied, launch a
-fresh-context subagent before the coordinator reads or runs any eval cases. The
-subagent must create only `<target-skill>/evals/**` and follow
-[the independent authoring protocol](references/eval-authoring.md). Do not fork
-the main conversation into it or provide proposed answers, expected failures,
-intended fixes, candidate outputs, or prior benchmark results.
+fresh-context subagent before the coordinator reads or runs any case. The
+subagent writes only `<target-skill>/evals/**` and follows
+[the independent authoring protocol](references/eval-authoring.md).
+
+Give the subagent the target path and schema path only — no parent conversation,
+proposed answers, expected failures, intended fixes, candidate outputs, or prior
+benchmark results.
 
 Once authoring begins, freeze the target skill implementation for this run. The
-coordinator may receive only the subagent's factual handoff and audit summary;
-do not open case prompts, graders, fixtures, or references in the main model's
-context before trials. If authoring or validation fails, delegate repair to a
-new fresh-context subagent or stop. Never let the coordinator co-author the
-suite. If fresh subagents are unavailable, report the blocker instead of
-writing evals in the main chat.
+coordinator may receive only the subagent's factual handoff and audit summary.
+If authoring or validation fails, delegate repair to a new fresh-context
+subagent or stop. If fresh subagents are unavailable, report the blocker and
+leave suite writing out of the main chat.
 
 Complete when: the subagent reports schema version 3, at least three distinct
-cases, honest provenance, passing static audit, and no live model calls. If a
-suite already exists, leave it unchanged and continue.
+cases, honest provenance, passing static audit, and no live model calls — or
+an existing suite is left unchanged and work continues.
 
-3. Audit the suite without calling a model:
+### 3. Audit the suite without calling a model
 
 ```bash
 python3 "$SKILL_EVAL_DIR/scripts/audit_suite.py" \
   --skill-path /absolute/path/to/skill
 ```
 
-Complete when: the audit returns `"valid": true`. If it fails, report the
-errors and stop with target trials unstarted; suite repair requires separate
-authority.
+Complete when: the audit returns `"valid": true`. On failure, report errors and
+stop with target trials unstarted; suite repair needs separate authority.
 
-4. Discover and recommend models without calling one.
+### 4. Discover and pin models without calling one
 
 Ask whether the goal is a quick diagnostic, a release decision, or portability
 across model tiers. Classify the task as `simple`, `standard`, `complex`, or
-`portability` using the target skill and the eval author's factual summary;
-do not open hidden eval content to make this choice.
+`portability` from the skill surface and the authoring handoff — leave case
+prompts, graders, fixtures, and references sealed from the main context.
 
 ```bash
 python3 "$SKILL_EVAL_DIR/scripts/recommend_models.py" \
@@ -131,44 +129,41 @@ python3 "$SKILL_EVAL_DIR/scripts/recommend_models.py" \
 
 The recommender queries authenticated harness-native inventory for Pi, Codex,
 and Hermes. Claude Code has no stable non-interactive inventory command, so
-ask the user to choose exact ids from its model picker and rerun with
-`--models exact-id-1,exact-id-2`. Never hardcode a subscription assumption or
-invent availability, price, or quota.
+collect exact ids from its model picker and rerun with
+`--models exact-id-1,exact-id-2`. Availability, price, and quota come only from
+live discovery or the user — invent none.
 
 Show the budget, balanced, and quality frontier; disclose tier fallbacks and
-unknown cost. For a release claim, prefer the intended deployment model. For a
-portability claim, plan separate runs across tiers. Use no judge for fully
-deterministic suites. When model rubrics are unavoidable, recommend the
-strongest available judge and disclose whether it is the same model as the
-target.
+unknown cost. For a release claim, prefer the intended deployment model. For
+portability, plan separate runs across tiers. Use no judge when the suite is
+fully deterministic. When model rubrics are unavoidable, recommend the strongest
+available judge and disclose same-model-as-target risk.
 
-Ask the user to confirm the exact target model before placing it in any run
-command. If model rubrics require a judge, ask a separate question to confirm
-the judge model after the target model is settled. Recommend a one-trial pilot
-first; inspect validity, traces, grading, and actual cost before proposing more
-trials.
+Confirm the exact target model before any run command. Confirm the judge model
+in a separate turn only if model rubrics require one. Prefer a one-trial pilot;
+inspect validity, traces, grading, and actual cost before proposing more trials.
 
 If discovery or setup fails, follow
-[the setup remediation protocol](references/setup-remediation.md): explain the
-failed check and exact proposed fix, then wait for confirmation before making
-any change. Rerun the read-only check afterward.
+[the setup remediation protocol](references/setup-remediation.md): state the
+failed check and exact proposed fix, wait for confirmation before mutating,
+then rerun the read-only check.
 
-Complete when: the user confirms exact pinned model ids and understands the
-pilot invocation count, tier heuristic, provider-call and cost uncertainty,
-and judge limitations.
+Complete when: the user has pinned exact model ids and acknowledges the pilot
+invocation count, tier heuristic, provider-call and cost uncertainty, and judge
+limitations.
 
-5. Choose the observation mode, then inspect the run plan.
+### 5. Choose observation, dry-run the plan, authorize
 
-Before constructing the dry run, always alert the user to both options:
+Name both observation options before constructing the dry run:
 
-- `headless` (default) records the full evidence without opening a Herdr
-  workspace;
-- `herdr` mirrors live transcripts into a retained 2x2 workspace and requires
-  a Herdr-managed pane with `HERDR_ENV=1`.
+- `headless` (default) — full evidence without a Herdr workspace
+- `herdr` — mirror live transcripts into a retained 2×2 workspace; requires a
+  Herdr-managed pane with `HERDR_ENV=1`
 
-Ask which option they want unless their request already selects one. Do not
-silently enable Herdr. If they select Herdr, add `--observer herdr` to both the
-dry-run and live commands and verify its environment before live trials.
+Ask unless already selected. Pass `--observer herdr` on dry-run and live only
+when Herdr is chosen, and verify its environment before live trials. Workspace
+path layout lives in
+[the workspace layout reference](references/workspace-layout.md).
 
 ```bash
 python3 "$SKILL_EVAL_DIR/scripts/run_skill_eval.py" \
@@ -179,33 +174,29 @@ python3 "$SKILL_EVAL_DIR/scripts/run_skill_eval.py" \
   --dry-run
 ```
 
-The default output must resolve below:
+Default output resolves under:
 
 ```text
 <agent-skills-root>/.eval-runs/<skill-name>/<run-id>/
 ```
 
-`--output-dir` is an override, but the runner rejects paths inside the active
+`--output-dir` may override; the runner rejects paths inside the active
 `skills/` directory.
 
-Complete when: the plan names the requested skill, selected harness, exact
-model, trial count, pair count, exact harness-invocation count, counterbalanced
-execution order, observer, and an output path outside `skills/`. Dry-run must
-not create files, workspaces, or panes.
+Present the validated plan as a compact two-column Markdown table (not a
+bullet list). Rows: harness, target model, judge model when present, trials per
+case, cases, paired trials, observation, credential status, target invocations,
+judge invocations, and total harness invocations — **bold the total**. State
+above the table that the dry run created no provider model calls or artifacts
+and that live provider-call count and cost are unknown.
 
-Present the validated plan as a compact two-column Markdown table rather than
-a bullet list. Use rows for harness, target model, judge model when present,
-trials per case, cases, paired trials, observation, credential status, target
-invocations, judge invocations, and total harness invocations. Bold the total
-invocation value. State above the table that the dry run created no provider
-model calls or artifacts, and that the live provider-call count and cost are
-unknown.
+Complete when: the plan names skill, harness, exact model, trial count, pair
+count, exact harness-invocation count, counterbalanced order, observer, and an
+output path outside `skills/`; dry-run created no files, workspaces, or panes;
+and the user has authorized observation mode, pilot invocation count, and
+provider-call uncertainty.
 
-After the table, wait for explicit authorization of the selected observation
-mode, pilot invocation count, and provider-call uncertainty before the live
-command.
-
-6. Run the paired pilot:
+### 6. Run the paired pilot
 
 ```bash
 python3 "$SKILL_EVAL_DIR/scripts/run_skill_eval.py" \
@@ -216,53 +207,41 @@ python3 "$SKILL_EVAL_DIR/scripts/run_skill_eval.py" \
 ```
 
 Add `--judge-model exact-provider/model-id` only when the suite contains a
-`model_rubric` grader. Judge calls use the same selected harness with skills
-disabled and that harness's strictest supported tool posture. The run artifact
-records whether this is an exact allowlist, a disabled toolset, or only a
-sandbox posture. Prefer deterministic graders.
+`model_rubric` grader. Judge calls use the same harness with skills disabled
+and that harness's strictest supported tool posture (exact allowlist, disabled
+toolset, or sandbox-only — recorded in the run artifact). Prefer deterministic
+graders.
 
-The default runner is headless. Add `--observer herdr` to mirror live
-transcripts into one retained workspace named `eval:<skill>:<run-id>`:
+The runner owns counterbalance (odd trials control-first; even trials
+treatment-first), reference validation, provenance hashes, and post-invocation
+trace-attested model identity checks. A missing or mismatched judge identity
+stops on the first reference judge; without model rubrics, a missing or
+mismatched target identity stops after the first target invocation. Forced Codex
+treatment also requires trace-visible access to the full structured skill
+payload before downstream grading.
 
-```text
-coordinator | control
-with-skill  | judge-results
-```
+Raw harness traces are the evidence owner. Herdr, when enabled, focuses a
+retained workspace once, reuses condition panes sequentially, and routes model-
+rubric calls through the judge-results pane; the workspace stays open after
+completion, failure, or cancellation, is renamed with terminal status, and sends
+one notification.
 
-The observer focuses the workspace once, reuses each condition pane
-sequentially, and routes model-rubric calls through the judge-results pane.
-Raw harness traces remain the evidence owner in both modes; Herdr is only an
-observer.
-
-Counterbalance conditions deterministically:
-
-```text
-odd trial:  without-skill → with-skill
-even trial: with-skill → without-skill
-```
-
-The runner validates references before target trials and retains provenance
-and hashes. After every harness invocation, it verifies trace-attested model
-identity before starting any downstream invocation. A missing or mismatched
-judge identity therefore stops during the first reference judge; without model
-rubrics, a missing or mismatched target identity stops after the first target
-invocation. For a forced Codex treatment, the runner also requires
-trace-visible access to the full structured skill payload before starting
-downstream grading.
+On Ctrl-C, stop the active harness process, preserve partial artifacts, and
+require `run_state.json` to report `"status": "cancelled"` and
+`"valid": false`.
 
 Complete when: the pilot pair finishes and `run_manifest.json` plus
-`benchmark.json` exist. For an invalid run, preserve its evidence, report the
-cause, and start a new run only after correcting the cause. For a valid pilot,
-report the observed counts, routing evidence, actual cost, and limits; then ask
-whether to scale to the user's confirmed trial count in a new run.
+`benchmark.json` exist. For an invalid run, preserve evidence, report the
+cause, and start a new run only after correcting it. For a valid pilot, report
+observed counts, routing evidence, actual cost, and limits, then ask whether to
+scale to the user's confirmed trial count in a new run.
 
-With Herdr observation, the workspace remains open after completion, failure,
-or cancellation, is renamed with its terminal status, and sends one
-notification. On Ctrl-C in either mode, stop the active harness process, preserve
-partial artifacts, and require `run_state.json` to report
-`"status": "cancelled"` and `"valid": false`.
+### 7. Interpret and (optionally) revalidate
 
-7. Revalidate an existing run after copying or reviewing it:
+Load [interpret-benchmark.md](references/interpret-benchmark.md) and report from
+`benchmark.json` using its field definitions and claim boundaries.
+
+To revalidate a copied or reviewed run:
 
 ```bash
 python3 "$SKILL_EVAL_DIR/scripts/aggregate_benchmark.py" \
@@ -274,44 +253,22 @@ control exposure, or an installed payload that differs from the evaluated
 skill. It reparses hashed runtime-attestation traces instead of trusting cached
 routing booleans in the manifest.
 
-Complete when: aggregation succeeds and the regenerated benchmark has
-`"valid": true`. Otherwise report the integrity failure and preserve the run.
+Complete when: the interpretation matches the reference's claim boundaries, and
+if revalidation ran, the regenerated benchmark has `"valid": true` (otherwise
+the integrity failure is reported and the run preserved).
 
-## Interpret the result
+## Progressive disclosure
 
-Use `benchmark.json`:
-
-- `valid` and `artifact_valid` report evidence integrity, not causal
-  attribution.
-- `mechanism_valid` reports whether the selected adapter assigned the sealed
-  skill treatment, used the suite's activation mode, and kept the control
-  unexposed.
-- `runtime_attestation_complete` reports whether the trace independently names
-  skill injection or explicit skill access. Some harness traces do not expose
-  this lower-layer event.
-- `outcome_verdict` is `improved`, `regressed`, or `no_difference`.
-- `verdict` is the top-level result and becomes `invalid` or
-  `mechanism_unconfirmed` when those boundaries fail.
-- `task_success.delta` is the treatment rate minus the control rate.
-- `selection_verdict` and `routing.accuracy` score trace-visible access only
-  for autonomous schema-3 suites.
-- `routing` reports treatment availability, trace-visible injection, explicit
-  access, selection errors, and control exposure.
-- `operations` reports errors, timeouts, tokens, and cost.
-
-Treat the assigned intervention, runtime attestation, routing decision, and
-task outcome as separate evidence.
-
-Report only local paired evidence. Mark causal attribution, statistical
-significance, distribution readiness, security approval, and blind-review
-independence as unproven. Also report that condition order is counterbalanced
-but temporal drift remains possible, and that tool enforcement varies across
-harnesses.
-
-Only the independent eval-author subagent should read
-[the suite schema](references/eval-suite-schema.md) and
-[the authoring protocol](references/eval-authoring.md) before trials. Read
-[the setup remediation protocol](references/setup-remediation.md) only after a
-failed environment or model-discovery check. Read
-[the workspace layout](references/workspace-layout.md) only when inspecting
-retained evidence.
+- Independent suite authoring:
+  [references/eval-authoring.md](references/eval-authoring.md) and
+  [references/eval-suite-schema.md](references/eval-suite-schema.md) — author
+  subagent only, before trials.
+- Setup remediation:
+  [references/setup-remediation.md](references/setup-remediation.md) — after a
+  failed environment or model-discovery check.
+- Retained evidence layout:
+  [references/workspace-layout.md](references/workspace-layout.md) — when
+  inspecting run artifacts or Herdr workspaces.
+- Result field map:
+  [references/interpret-benchmark.md](references/interpret-benchmark.md) —
+  after a finished or revalidated run.

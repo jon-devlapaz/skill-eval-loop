@@ -94,7 +94,7 @@ class WorkflowContractTests(unittest.TestCase):
             SKILL_ROOT / "references" / "eval-authoring.md"
         ).read_text(encoding="utf-8")
         self.assertIn("fresh-context subagent", skill_text)
-        self.assertIn("coordinator co-author", skill_text)
+        self.assertIn("leave suite writing out of the main chat", skill_text)
         self.assertIn("write only `<target-skill>/evals/**`", protocol)
         self.assertIn("at least three distinct", protocol)
         self.assertIn("Do not supply the parent conversation", protocol)
@@ -105,16 +105,17 @@ class WorkflowContractTests(unittest.TestCase):
             SKILL_ROOT / "references" / "setup-remediation.md"
         ).read_text(encoding="utf-8")
         self.assertIn("recommend_models.py", skill_text)
-        self.assertIn("confirm the exact target model", skill_text)
+        self.assertIn("Confirm the exact target model", skill_text)
         self.assertIn("explicit yes", remediation)
         self.assertIn("Never ask the user to paste a secret", remediation)
 
     def test_interaction_asks_one_question_at_a_time(self) -> None:
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
-        self.assertIn("Ask exactly one question in each message", skill_text)
-        self.assertIn("wait for the answer before asking", skill_text)
-        self.assertIn("ask a separate question to confirm", skill_text)
-        self.assertIn("Setup remediation interrupts", skill_text)
+        self.assertIn("Ask exactly one open question per message", skill_text)
+        self.assertIn("wait for the answer", skill_text)
+        self.assertIn("Confirm the judge model", skill_text)
+        self.assertIn("separate turn", skill_text)
+        self.assertIn("Setup remediation may interrupt", skill_text)
         self.assertIn("stated fix", skill_text)
 
 

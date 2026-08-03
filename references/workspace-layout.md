@@ -39,3 +39,17 @@ It records the headless or Herdr observer and the counterbalanced condition
 schedule. When Codex supplies a persisted rollout for model or skill
 attestation, the manifest records and hashes that rollout separately from the
 public JSONL transcript.
+
+## Herdr observation
+
+With `--observer herdr`, the runner mirrors live transcripts into one retained
+workspace named `eval:<skill>:<run-id>`:
+
+```text
+coordinator | control
+with-skill  | judge-results
+```
+
+It focuses the workspace once, reuses each condition pane sequentially, and
+routes model-rubric calls through the judge-results pane. Raw harness traces
+under the run directory remain the evidence owner; Herdr is only an observer.
