@@ -348,6 +348,12 @@ def load_suite(skill_path: Path, evals_path: Path | None = None) -> dict[str, An
             raise ValueError(f"{label}.reference must be an object")
         if not isinstance(reference.get("response", ""), str):
             raise ValueError(f"{label}.reference.response must be a string")
+        counter_reference = case.get("counter_reference")
+        if counter_reference is not None:
+            if not isinstance(counter_reference, dict):
+                raise ValueError(f"{label}.counter_reference must be an object")
+            if not isinstance(counter_reference.get("response", ""), str):
+                raise ValueError(f"{label}.counter_reference.response must be a string")
         normalized = dict(case)
         normalized["id"] = case_id
         normalized["prompt"] = prompt.strip()

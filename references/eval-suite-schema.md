@@ -41,6 +41,20 @@ Use:
 - `forced` to expand the target skill before the task, or `autonomous` to
   expose only its metadata and measure whether the model reads `SKILL.md`.
 
+Each case may declare an optional `counter_reference` beside `reference`:
+
+```json
+"reference": {"response": "a correct answer"},
+"counter_reference": {"response": "a plausible but wrong answer"}
+```
+
+`reference` proves the graders accept a correct answer. `counter_reference`
+proves they reject a wrong one. Both are graded before any trial runs, and a
+counter-reference that passes stops the run: graders that accept everything
+report the same verdict for both conditions, so the paired comparison says
+nothing. A counter-reference is part of the case, so adding one changes the case
+hash and the provenance manifest needs re-registering.
+
 Every condition receives the same task, fixture, model, harness, and tool
 profile. The treatment additionally receives the selected harness's native
 isolated skill installation. In `forced` mode the adapter explicitly activates
