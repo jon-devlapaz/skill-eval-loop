@@ -16,6 +16,7 @@ from runtime_adapters import (
     skill_payload_sha256,
     trace_metadata,
 )
+from runtime_attestation import evaluate_target_trace_attestation
 
 
 CONDITIONS = ("without_skill", "with_skill")
@@ -211,15 +212,15 @@ def _condition_record(
         requested_model=requested_model,
         attestation_trace_path=attestation_trace,
     )
-    if harness == "codex" and attestation_trace is None:
-        invalid.append("attestation_trace_missing")
-    attested_model = metadata.get("actual_model")
-    if metadata.get("model_attested") is not True:
-        invalid.append("model_not_attested")
-    if not model_matches(requested_model, attested_model):
-        invalid.append("model_mismatch")
-    if not model_matches(str(record.get("actual_model", "")), attested_model):
-        invalid.append("manifest_model_mismatch")
+    invalid.extend(
+        evaluate_target_trace_attestation(
+            metadata,
+            harness=harness,
+            requested_model=requested_model,
+            # Empty string, not None: None skips the manifest check.
+            recorded_actual_model=str(record.get("actual_model") or ""),
+        )
+    )
 
     return {
         "success": task_success and not {"timeout", "runtime_error"} & set(invalid),

@@ -47,6 +47,10 @@ from runtime_adapters import (  # noqa: E402
     trace_metadata,
     validate_pinned_model,
 )
+from runtime_attestation import (  # noqa: E402
+    evaluate_target_trace_attestation,
+    require_target_runtime_attestation,
+)
 from workspace_paths import DEFAULT_EVAL_RUNS_ROOT, default_run_output  # noqa: E402
 
 
@@ -733,6 +737,106 @@ class CounterReferenceTests(unittest.TestCase):
                 ValueError, "requires at least one response-sensitive grader"
             ):
                 load_suite(skill)
+
+
+class TargetAttestationOwnerTests(unittest.TestCase):
+    def _ok_metadata(self, **overrides: object) -> dict:
+        metadata = {
+            "attestation_trace_path": Path("/tmp/rollout.jsonl"),
+            "model_attested": True,
+            "actual_model": "provider/model-1",
+            "skill_explicitly_accessed": True,
+        }
+        metadata.update(overrides)
+        return metadata
+
+    def test_evaluate_passes_when_attested(self) -> None:
+        reasons = evaluate_target_trace_attestation(
+            self._ok_metadata(),
+            harness="codex",
+            requested_model="provider/model-1",
+            recorded_actual_model="provider/model-1",
+        )
+        self.assertEqual(reasons, [])
+
+    def test_evaluate_reports_codex_rollout_missing(self) -> None:
+        reasons = evaluate_target_trace_attestation(
+            self._ok_metadata(attestation_trace_path=None, model_attested=False),
+            harness="codex",
+            requested_model="provider/model-1",
+        )
+        self.assertIn("attestation_trace_missing", reasons)
+        self.assertIn("model_not_attested", reasons)
+
+    def test_evaluate_reports_manifest_model_mismatch(self) -> None:
+        reasons = evaluate_target_trace_attestation(
+            self._ok_metadata(actual_model="provider/other"),
+            harness="codex",
+            requested_model="provider/model-1",
+            recorded_actual_model="provider/model-1",
+        )
+        self.assertIn("model_mismatch", reasons)
+        self.assertIn("manifest_model_mismatch", reasons)
+
+    def test_evaluate_fail_closed_on_empty_recorded_model(self) -> None:
+        reasons = evaluate_target_trace_attestation(
+            self._ok_metadata(),
+            harness="codex",
+            requested_model="provider/model-1",
+            recorded_actual_model="",
+        )
+        self.assertIn("manifest_model_mismatch", reasons)
+
+    def test_require_raises_when_forced_skill_not_accessed(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "forced target skill fixture-skill was not explicitly accessed",
+        ):
+            require_target_runtime_attestation(
+                self._ok_metadata(skill_explicitly_accessed=False),
+                harness="codex",
+                requested_model="provider/model-1",
+                condition="with_skill",
+                activation_mode="forced",
+                skill_name="fixture-skill",
+                trace_path=Path("/tmp/trace.jsonl"),
+            )
+
+    def test_require_skips_forced_skill_outside_codex_forced_treatment(self) -> None:
+        require_target_runtime_attestation(
+            self._ok_metadata(skill_explicitly_accessed=False),
+            harness="pi",
+            requested_model="provider/model-1",
+            condition="with_skill",
+            activation_mode="forced",
+            skill_name="fixture-skill",
+            trace_path=Path("/tmp/trace.jsonl"),
+        )
+
+    def test_evaluate_reports_forced_skill_when_write_context_supplied(self) -> None:
+        reasons = evaluate_target_trace_attestation(
+            self._ok_metadata(skill_explicitly_accessed=False),
+            harness="codex",
+            requested_model="provider/model-1",
+            condition="with_skill",
+            activation_mode="forced",
+        )
+        self.assertEqual(reasons, ["forced_skill_not_accessed"])
+
+    def test_require_maps_evaluate_reasons_to_runtime_errors(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "requested target model provider/model-1 but attested provider/other",
+        ):
+            require_target_runtime_attestation(
+                self._ok_metadata(actual_model="provider/other"),
+                harness="codex",
+                requested_model="provider/model-1",
+                condition="without_skill",
+                activation_mode="forced",
+                skill_name="fixture-skill",
+                trace_path=Path("/tmp/trace.jsonl"),
+            )
 
 
 class RuntimeTests(unittest.TestCase):

@@ -26,12 +26,12 @@ from model_grader import run_model_grade
 from runtime_adapters import (
     HARNESS_NAMES,
     build_invocation,
-    model_matches,
     resolve_harness,
     skill_payload_sha256,
     trace_metadata,
     validate_pinned_model,
 )
+from runtime_attestation import require_target_runtime_attestation
 from workspace_paths import DEFAULT_EVAL_RUNS_ROOT, default_run_output
 
 
@@ -346,29 +346,15 @@ def _run_condition(
             else None
         ),
     )
-    if harness == "codex" and not metadata.get("attestation_trace_path"):
-        raise RuntimeError(
-            f"target model {model} was not attested; persisted Codex rollout "
-            f"is missing; see {trace_path}"
-        )
-    if metadata.get("model_attested") is not True:
-        raise RuntimeError(f"target model {model} was not attested; see {trace_path}")
-    actual_model = metadata.get("actual_model")
-    if not model_matches(model, actual_model):
-        raise RuntimeError(
-            f"requested target model {model} but attested {actual_model}; "
-            f"see {trace_path}"
-        )
-    if (
-        harness == "codex"
-        and condition == "with_skill"
-        and case["_activation_mode"] == "forced"
-        and metadata.get("skill_explicitly_accessed") is not True
-    ):
-        raise RuntimeError(
-            f"forced target skill {skill_path.name} was not explicitly accessed; "
-            f"see {trace_path}"
-        )
+    require_target_runtime_attestation(
+        metadata,
+        harness=harness,
+        requested_model=model,
+        condition=condition,
+        activation_mode=case["_activation_mode"],
+        skill_name=skill_path.name,
+        trace_path=trace_path,
+    )
     if timed_out or completed.returncode != 0:
         status = "timed out" if timed_out else f"exited {completed.returncode}"
         raise RuntimeError(
