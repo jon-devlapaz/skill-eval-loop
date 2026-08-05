@@ -163,9 +163,9 @@ def _grade_counter_reference(
     Returns the grading, or None when the case declares no counter-reference.
     """
     counter_reference = case.get("counter_reference")
-    if not counter_reference:
+    if counter_reference is None:
         return None
-    response = counter_reference.get("response", "")
+    response = counter_reference["response"]
     with tempfile.TemporaryDirectory(prefix="skill-eval-counter-") as temp:
         workspace = Path(temp)
         _prepare_workspace(suite_root, case, workspace, reference=True)

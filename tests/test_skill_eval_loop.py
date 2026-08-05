@@ -598,6 +598,37 @@ class CounterReferenceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "counter_reference.response must be a string"):
                 load_suite(skill)
 
+    def test_empty_counter_reference_object_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema3_skill(Path(temp))
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["counter_reference"] = {}
+            _write_json(suite_path, suite)
+            with self.assertRaisesRegex(
+                ValueError, "counter_reference.response is required"
+            ):
+                load_suite(skill)
+
+    def test_counter_reference_requires_a_response_sensitive_grader(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema3_skill(Path(temp))
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["graders"] = [
+                {
+                    "name": "Creates the result",
+                    "type": "file_exists",
+                    "path": "result.json",
+                }
+            ]
+            suite["evals"][0]["counter_reference"] = {"response": "wrong"}
+            _write_json(suite_path, suite)
+            with self.assertRaisesRegex(
+                ValueError, "requires at least one response-sensitive grader"
+            ):
+                load_suite(skill)
+
 
 class RuntimeTests(unittest.TestCase):
     def test_model_identity_rejects_suffix_collisions(self) -> None:
