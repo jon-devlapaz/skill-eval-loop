@@ -645,6 +645,7 @@ def run_suite(
             "dataset_origin": suite["dataset_origin"],
             "tool_profile": suite["tool_profile"],
             "activation_mode": suite["activation_mode"],
+            "distribution_policy": suite.get("distribution_policy"),
             "source_sha256": _sha256_file(Path(suite["source_path"])),
             "cases": [
                 {

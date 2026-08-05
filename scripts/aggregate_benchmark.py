@@ -596,6 +596,16 @@ def aggregate(run_dir: Path) -> dict:
         "operations": operations,
         "limits": [
             "This is a local paired diagnostic, not a distribution or significance claim.",
+            *(
+                [
+                    "distribution_policy was declared by the suite and not applied to this "
+                    f"result: minimum_pairs={declared_policy.get('minimum_pairs')}, "
+                    f"minimum_effect_size={declared_policy.get('minimum_effect_size')}, "
+                    f"confidence_level={declared_policy.get('confidence_level')}."
+                ]
+                if (declared_policy := suite_snapshot.get("distribution_policy"))
+                else []
+            ),
             (
                 f"{harness} skill exposure is configured by the selected adapter; "
                 "runtime attestation and tool-profile precision vary by harness."
