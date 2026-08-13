@@ -26,8 +26,8 @@ func Run(runDir string) (map[string]any, error) {
 		return nil, fmt.Errorf("run_manifest.json must use schema_version 1")
 	}
 	harness, _ := manifest["harness"].(string)
-	if harness != "pi" && harness != "claude-code" && harness != "hermes" {
-		return nil, fmt.Errorf("aggregate currently supports retained Pi, Claude Code, and Hermes runs")
+	if harness != "pi" && harness != "claude-code" && harness != "hermes" && harness != "codex" {
+		return nil, fmt.Errorf("aggregate currently supports retained Pi, Claude Code, Codex, and Hermes runs")
 	}
 	skillName, _ := manifest["target_skill_name"].(string)
 	requested, _ := manifest["requested_model"].(string)
@@ -163,7 +163,7 @@ func Run(runDir string) (map[string]any, error) {
 			if !ok {
 				return nil, fmt.Errorf("%s.%s is missing", label, condition)
 			}
-			result, err := validateCondition(root, record, condition, label, caseID, trial, requested, skillName, skillHash)
+			result, err := validateCondition(root, record, condition, label, caseID, trial, requested, harness, skillName, skillHash)
 			if err != nil {
 				return nil, err
 			}
@@ -244,7 +244,7 @@ type conditionResult struct {
 	activation                             string
 }
 
-func validateCondition(root string, record map[string]any, condition, label, caseID string, trial int, requested, skillName, skillHash string) (conditionResult, error) {
+func validateCondition(root string, record map[string]any, condition, label, caseID string, trial int, requested, harness, skillName, skillHash string) (conditionResult, error) {
 	prefix := label + "." + condition
 	if record["condition"] != condition {
 		return conditionResult{}, fmt.Errorf("%s.condition does not match its manifest key", prefix)
@@ -291,7 +291,15 @@ func validateCondition(root string, record map[string]any, condition, label, cas
 			return conditionResult{}, fmt.Errorf("%s.available_skills must contain only %s", prefix, skillName)
 		}
 	}
-	model, injected, accessed, err := traceEvidence(trace, skillName)
+	traces := []string{trace}
+	if value, _ := record["attestation_trace_path"].(string); value != "" {
+		attestation, err := requireHash(root, record, "attestation_trace", prefix)
+		if err != nil {
+			return conditionResult{}, err
+		}
+		traces = append(traces, attestation)
+	}
+	model, injected, accessed, err := traceEvidence(traces, skillName)
 	if err != nil {
 		return conditionResult{}, err
 	}
@@ -362,39 +370,57 @@ func validateGrading(path, label string) (bool, error) {
 	}
 	return passed == total, nil
 }
-func traceEvidence(path, skill string) (string, bool, bool, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", false, false, err
-	}
-	defer file.Close()
+func traceEvidence(paths []string, skill string) (string, bool, bool, error) {
 	model := ""
 	injected := false
 	accessed := false
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		var event map[string]any
-		if json.Unmarshal(scanner.Bytes(), &event) != nil {
-			continue
+	for _, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			return "", false, false, err
 		}
-		provider, _ := event["provider"].(string)
-		observed, _ := event["model"].(string)
-		if observed != "" {
-			if provider != "" && !strings.Contains(observed, "/") {
-				observed = provider + "/" + observed
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			var event map[string]any
+			if json.Unmarshal(scanner.Bytes(), &event) != nil {
+				continue
 			}
-			model = observed
-		}
-		for _, name := range stringSlice(event["skills"]) {
-			if strings.EqualFold(name, skill) {
-				injected = true
+			provider, _ := event["provider"].(string)
+			observed, _ := event["model"].(string)
+			if payload, ok := event["payload"].(map[string]any); ok && event["type"] == "turn_context" {
+				observed, _ = payload["model"].(string)
+			}
+			if observed != "" {
+				if provider != "" && !strings.Contains(observed, "/") {
+					observed = provider + "/" + observed
+				}
+				model = observed
+			}
+			for _, name := range stringSlice(event["skills"]) {
+				if strings.EqualFold(name, skill) {
+					injected = true
+				}
+			}
+			lower := strings.ToLower(string(scanner.Bytes()))
+			if strings.Contains(lower, "/"+strings.ToLower(skill)+"/skill.md") {
+				if event["type"] == "world_state" {
+					injected = true
+				}
+				if event["type"] != "world_state" {
+					accessed = true
+				}
 			}
 		}
-		if strings.Contains(strings.ToLower(string(scanner.Bytes())), "/"+strings.ToLower(skill)+"/skill.md") {
-			accessed = true
+		err = scanner.Err()
+		closeErr := file.Close()
+		if err != nil {
+			return "", false, false, err
+		}
+		if closeErr != nil {
+			return "", false, false, closeErr
 		}
 	}
-	return model, injected, accessed, scanner.Err()
+	return model, injected, accessed, nil
 }
 func payloadHash(root string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(root, "SKILL.md"))

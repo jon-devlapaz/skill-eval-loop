@@ -33,8 +33,8 @@ type Input struct {
 }
 
 func Run(ctx context.Context, input Input) (map[string]any, error) {
-	if input.Plan.Harness != "pi" && input.Plan.Harness != "claude-code" && input.Plan.Harness != "hermes" {
-		return nil, errors.New("run execution currently supports Pi, Claude Code, and Hermes")
+	if input.Plan.Harness != "pi" && input.Plan.Harness != "claude-code" && input.Plan.Harness != "hermes" && input.Plan.Harness != "codex" {
+		return nil, errors.New("unsupported run harness")
 	}
 	if input.JudgeModel != "" {
 		return nil, errors.New("model-rubric execution is not implemented yet")
@@ -162,6 +162,8 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 	if condition == "with_skill" {
 		if input.Plan.Harness == "claude-code" {
 			installed = filepath.Join(workspace, ".claude", "skills", suite.SkillName)
+		} else if input.Plan.Harness == "codex" {
+			installed = filepath.Join(workspace, ".agents", "skills", suite.SkillName)
 		} else {
 			installed = filepath.Join(conditionDir, "installed-skill", suite.SkillName)
 		}
@@ -181,6 +183,8 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 		if suite.ActivationMode == "forced" {
 			if input.Plan.Harness == "claude-code" {
 				prompt = "/" + suite.SkillName + " " + prompt
+			} else if input.Plan.Harness == "codex" {
+				prompt = "Use the $" + suite.SkillName + " skill. " + prompt
 			} else if input.Plan.Harness == "hermes" {
 				prompt = "Use the " + suite.SkillName + " skill. " + prompt
 			} else {
@@ -215,8 +219,20 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 			return conditionRecord{}, err
 		}
 	}
+	if input.Plan.Harness == "codex" {
+		codexHome := filepath.Join(conditionDir, "codex-home")
+		if err := applyCodexAttestation(codexHome, suite.SkillName, installed, &metadata); err != nil {
+			return conditionRecord{}, err
+		}
+		if metadata.AttestationTracePath == "" {
+			return conditionRecord{}, fmt.Errorf("codex persisted attestation trace missing for requested model %s; retained trace at %s", input.Plan.Model, tracePath)
+		}
+	}
 	if !metadata.ModelAttested || !strings.EqualFold(metadata.ActualModel, input.Plan.Model) {
 		return conditionRecord{}, fmt.Errorf("target trace model does not match requested model %s; retained trace at %s", input.Plan.Model, tracePath)
+	}
+	if input.Plan.Harness == "codex" && condition == "with_skill" && suite.ActivationMode == "forced" && !metadata.SkillExplicitlyAccessed {
+		return conditionRecord{}, fmt.Errorf("forced target skill %s was not explicitly accessed; see %s", suite.SkillName, tracePath)
 	}
 	if result.TimedOut || result.ExitCode != 0 {
 		status := fmt.Sprintf("exited %d", result.ExitCode)
@@ -259,6 +275,15 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 			toolEnforcement = "toolset_posture_only"
 		}
 	}
+	if input.Plan.Harness == "codex" {
+		toolEnforcement = "sandbox_posture_only"
+	}
+	attestationRelative := ""
+	attestationHash := ""
+	if metadata.AttestationTracePath != "" {
+		attestationRelative, _ = filepath.Rel(input.Plan.OutputDir, metadata.AttestationTracePath)
+		attestationHash, _ = fileHash(metadata.AttestationTracePath)
+	}
 	return conditionRecord{
 		CaseID: current.ID, Trial: trial, Condition: condition,
 		StartedAt:       startedAt.Format("2006-01-02T15:04:05.000000+00:00"),
@@ -272,7 +297,7 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 		SkillInjectionAttested: metadata.SkillInjectionAttested, SkillExplicitlyAccessed: metadata.SkillExplicitlyAccessed,
 		ExpectedSkillLoading: map[bool]string{true: current.ExpectedSkillLoading, false: "forbidden"}[condition == "with_skill"],
 		JudgeRecords:         []any{}, TracePath: filepath.ToSlash(traceRelative), TraceSHA256: traceHash,
-		AttestationTracePath: "", AttestationTraceSHA256: "",
+		AttestationTracePath: filepath.ToSlash(attestationRelative), AttestationTraceSHA256: attestationHash,
 		ResponsePath: filepath.ToSlash(responseRelative), ResponseSHA256: responseHash,
 		GradingPath: filepath.ToSlash(gradingRelative), GradingSHA256: gradingHash,
 	}, nil
@@ -280,6 +305,7 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 
 type traceMetadata struct {
 	SessionID, ActualModel, FinalResponse  string
+	AttestationTracePath                   string
 	ModelAttested, SkillInjectionAttested  bool
 	SkillExplicitlyAccessed                bool
 	InputTokens, OutputTokens, TotalTokens any
@@ -311,6 +337,37 @@ func targetInvocation(plan runplan.Plan, suite *evalspec.Suite, tools []string, 
 		}
 		return argv, environmentWith("HERMES_CONFIG", configPath), nil
 	}
+	if plan.Harness == "codex" {
+		home := filepath.Join(conditionDir, "harness-home")
+		codexHome := filepath.Join(conditionDir, "codex-home")
+		if err := os.MkdirAll(home, 0o755); err != nil {
+			return nil, nil, err
+		}
+		if err := os.MkdirAll(codexHome, 0o755); err != nil {
+			return nil, nil, err
+		}
+		sourceHome := os.Getenv("CODEX_HOME")
+		if sourceHome == "" {
+			userHome, err := os.UserHomeDir()
+			if err != nil {
+				return nil, nil, err
+			}
+			sourceHome = filepath.Join(userHome, ".codex")
+		}
+		authSource := filepath.Join(sourceHome, "auth.json")
+		authTarget := filepath.Join(codexHome, "auth.json")
+		if info, err := os.Stat(authSource); err == nil && info.Mode().IsRegular() {
+			if err := os.Symlink(authSource, authTarget); err != nil && !os.IsExist(err) {
+				return nil, nil, err
+			}
+		}
+		sandbox := "workspace-write"
+		if suite.ToolProfile == "no_tools" || suite.ToolProfile == "read_only" {
+			sandbox = "read-only"
+		}
+		argv := []string{plan.HarnessPath, "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--sandbox", sandbox, "--model", plan.Model, prompt}
+		return argv, environmentWithValues(map[string]string{"HOME": home, "CODEX_HOME": codexHome}), nil
+	}
 	argv := []string{plan.HarnessPath, "--print", "--mode", "json", "--no-session", "--no-skills", "--no-extensions", "--no-prompt-templates", "--no-context-files", "--approve", "--model", plan.Model, "--append-system-prompt", systemPrompt}
 	if len(tools) == 0 {
 		argv = append(argv, "--no-tools")
@@ -324,15 +381,26 @@ func targetInvocation(plan runplan.Plan, suite *evalspec.Suite, tools []string, 
 }
 
 func environmentWith(key, value string) []string {
+	return environmentWithValues(map[string]string{key: value})
+}
+
+func environmentWithValues(overrides map[string]string) []string {
 	environment := append([]string(nil), os.Environ()...)
-	prefix := key + "="
-	for index, entry := range environment {
-		if strings.HasPrefix(entry, prefix) {
-			environment[index] = prefix + value
-			return environment
+	for key, value := range overrides {
+		prefix := key + "="
+		found := false
+		for index, entry := range environment {
+			if strings.HasPrefix(entry, prefix) {
+				environment[index] = prefix + value
+				found = true
+				break
+			}
+		}
+		if !found {
+			environment = append(environment, prefix+value)
 		}
 	}
-	return append(environment, prefix+value)
+	return environment
 }
 
 func applyHermesUsage(path string, metadata *traceMetadata) error {
@@ -382,6 +450,11 @@ func parseTrace(path, skillName string) (traceMetadata, error) {
 		if value, ok := event["session_id"].(string); ok {
 			metadata.SessionID = value
 		}
+		if event["type"] == "thread.started" {
+			if value, ok := event["thread_id"].(string); ok {
+				metadata.SessionID = value
+			}
+		}
 		if event["type"] == "system" && event["subtype"] == "init" {
 			if value, ok := event["model"].(string); ok {
 				models[value] = true
@@ -394,6 +467,22 @@ func parseTrace(path, skillName string) (traceMetadata, error) {
 			}
 		}
 		visitAssistant(event, &metadata, models)
+		if item, ok := event["item"].(map[string]any); ok && item["type"] == "agent_message" {
+			if text, ok := item["text"].(string); ok {
+				metadata.FinalResponse = strings.TrimSpace(text)
+			}
+		}
+		if event["type"] == "turn.completed" {
+			if usage, ok := event["usage"].(map[string]any); ok {
+				metadata.InputTokens = integerJSON(usage["input_tokens"])
+				metadata.OutputTokens = integerJSON(usage["output_tokens"])
+				if input, ok := metadata.InputTokens.(int); ok {
+					if output, ok := metadata.OutputTokens.(int); ok {
+						metadata.TotalTokens = input + output
+					}
+				}
+			}
+		}
 		lower := strings.ToLower(string(scanner.Bytes()))
 		if strings.Contains(lower, "/"+strings.ToLower(skillName)+"/skill.md") {
 			metadata.SkillExplicitlyAccessed = true
@@ -404,6 +493,64 @@ func parseTrace(path, skillName string) (traceMetadata, error) {
 	}
 	metadata.ModelAttested = len(models) == 1 && metadata.ActualModel != ""
 	return metadata, nil
+}
+
+func applyCodexAttestation(codexHome, skillName, installed string, metadata *traceMetadata) error {
+	if metadata.SessionID == "" {
+		return nil
+	}
+	matches := []string{}
+	sessions := filepath.Join(codexHome, "sessions")
+	err := filepath.Walk(sessions, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) {
+				return nil
+			}
+			return walkErr
+		}
+		if info.Mode().IsRegular() && strings.HasSuffix(info.Name(), metadata.SessionID+".jsonl") {
+			matches = append(matches, path)
+		}
+		return nil
+	})
+	if err != nil || len(matches) != 1 {
+		return err
+	}
+	metadata.AttestationTracePath = matches[0]
+	file, err := os.Open(matches[0])
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	models := map[string]bool{}
+	if metadata.ActualModel != "" {
+		models[metadata.ActualModel] = true
+	}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var event map[string]any
+		if json.Unmarshal(scanner.Bytes(), &event) != nil {
+			continue
+		}
+		payload, _ := event["payload"].(map[string]any)
+		if event["type"] == "turn_context" {
+			if model, ok := payload["model"].(string); ok {
+				models[model] = true
+				metadata.ActualModel = model
+			}
+		}
+		lower := strings.ToLower(string(scanner.Bytes()))
+		if strings.Contains(lower, "/"+strings.ToLower(skillName)+"/skill.md") {
+			if event["type"] == "world_state" {
+				metadata.SkillInjectionAttested = true
+			}
+			if event["type"] == "response_item" && installed != "" {
+				metadata.SkillExplicitlyAccessed = true
+			}
+		}
+	}
+	metadata.ModelAttested = len(models) == 1 && metadata.ActualModel != ""
+	return scanner.Err()
 }
 
 func visitAssistant(value any, metadata *traceMetadata, models map[string]bool) {
