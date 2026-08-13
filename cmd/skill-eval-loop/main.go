@@ -27,9 +27,11 @@ func main() {
 		os.Exit(runAggregate(os.Args[2:]))
 	case "recommend-models":
 		os.Exit(runRecommend(os.Args[2:]))
+	case "run":
+		os.Exit(runRun(os.Args[2:]))
 	case "help", "-h", "--help":
 		usage()
-	case "run", "healthcheck":
+	case "healthcheck":
 		fmt.Fprintf(os.Stderr, "ERROR: %s is not implemented yet\n", os.Args[1])
 		os.Exit(1)
 	default:
@@ -40,6 +42,10 @@ func main() {
 }
 
 func runRecommend(arguments []string) int {
+	if hasHelp(arguments) {
+		fmt.Print(recommendHelp)
+		return 0
+	}
 	flags := flag.NewFlagSet("recommend-models", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	skillPath := flags.String("skill-path", "", "target skill directory")
@@ -137,6 +143,10 @@ func writeRecommendError(message string) {
 }
 
 func runAggregate(arguments []string) int {
+	if hasHelp(arguments) {
+		fmt.Print(aggregateHelp)
+		return 0
+	}
 	flags := flag.NewFlagSet("aggregate", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	flags.Usage = func() {
@@ -178,6 +188,10 @@ func runAggregate(arguments []string) int {
 }
 
 func runAudit(arguments []string) int {
+	if hasHelp(arguments) {
+		fmt.Print(auditHelp)
+		return 0
+	}
 	flags := flag.NewFlagSet("audit", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	flags.Usage = func() {
@@ -205,6 +219,97 @@ func runAudit(arguments []string) int {
 	}
 	return audit.ExitCode(report)
 }
+
+func runRun(arguments []string) int {
+	if hasHelp(arguments) {
+		fmt.Print(runHelp)
+		return 0
+	}
+	fmt.Fprintln(os.Stderr, "ERROR: run is not implemented yet")
+	return 1
+}
+
+func hasHelp(arguments []string) bool {
+	for _, argument := range arguments {
+		if argument == "-h" || argument == "--help" {
+			return true
+		}
+	}
+	return false
+}
+
+const auditHelp = `usage: audit_suite.py [-h] --skill-path SKILL_PATH [--evals-path EVALS_PATH]
+                      [--output OUTPUT]
+
+Validate a local eval suite, its routing, and its provenance.
+
+options:
+  -h, --help            show this help message and exit
+  --skill-path SKILL_PATH
+  --evals-path EVALS_PATH
+  --output OUTPUT
+`
+
+const recommendHelp = `usage: recommend_models.py [-h] --skill-path SKILL_PATH
+                           --harness {hermes,claude-code,codex,pi}
+                           [--harness-bin HARNESS_BIN]
+                           --task-profile {simple,standard,complex,portability}
+                           [--models MODELS]
+
+Recommend a no-call model configuration for one skill eval.
+
+options:
+  -h, --help            show this help message and exit
+  --skill-path SKILL_PATH
+  --harness {hermes,claude-code,codex,pi}
+  --harness-bin HARNESS_BIN
+  --task-profile {simple,standard,complex,portability}
+  --models MODELS       Exact comma-separated model ids when native discovery
+                        is unavailable.
+`
+
+const aggregateHelp = `usage: aggregate_benchmark.py [-h] --run-dir RUN_DIR [--output OUTPUT]
+
+Validate a paired Pi run and write benchmark.json.
+
+options:
+  -h, --help         show this help message and exit
+  --run-dir RUN_DIR
+  --output OUTPUT
+`
+
+const runHelp = `usage: run_skill_eval.py [-h] --skill-path SKILL_PATH
+                         [--evals-path EVALS_PATH] [--output-dir OUTPUT_DIR]
+                         --model MODEL [--trials TRIALS]
+                         --harness {hermes,claude-code,codex,pi}
+                         [--harness-bin HARNESS_BIN] [--pi-bin PI_BIN]
+                         [--timeout-seconds TIMEOUT_SECONDS]
+                         [--judge-model JUDGE_MODEL]
+                         [--judge-timeout-seconds JUDGE_TIMEOUT_SECONDS]
+                         [--observer {headless,herdr}] [--dry-run]
+
+Run a paired harness evaluation with and without one skill.
+
+options:
+  -h, --help            show this help message and exit
+  --skill-path SKILL_PATH
+  --evals-path EVALS_PATH
+  --output-dir OUTPUT_DIR
+                        Defaults to .eval-runs/<skill-name>/<run-id>/.
+  --model MODEL
+  --trials TRIALS
+  --harness {hermes,claude-code,codex,pi}
+  --harness-bin HARNESS_BIN
+  --pi-bin PI_BIN
+  --timeout-seconds TIMEOUT_SECONDS
+  --judge-model JUDGE_MODEL
+  --judge-timeout-seconds JUDGE_TIMEOUT_SECONDS
+  --observer {headless,herdr}
+                        Run headlessly or mirror processes in a retained Herdr
+                        workspace.
+  --dry-run             Validate and print the run plan without creating files
+                        or calling a model.
+`
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: skill-eval-loop <audit|recommend-models|run|aggregate|healthcheck> [options]")
