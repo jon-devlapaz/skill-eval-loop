@@ -1,0 +1,6 @@
+{
+  "name": "aggregate-missing-pair",
+  "command": "aggregate",
+  "args": ["--run-dir", "run"],
+  "fixture": "fixtures/aggregate-missing-pair"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "aggregate-retained-python",
+  "command": "aggregate",
+  "args": ["--run-dir", "run"],
+  "fixture": "fixtures/aggregate-retained-python"
+}

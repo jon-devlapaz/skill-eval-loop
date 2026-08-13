@@ -1,0 +1,6 @@
+{
+  "name": "aggregate-mutated-response",
+  "command": "aggregate",
+  "args": ["--run-dir", "run"],
+  "fixture": "fixtures/aggregate-mutated-response"
+}

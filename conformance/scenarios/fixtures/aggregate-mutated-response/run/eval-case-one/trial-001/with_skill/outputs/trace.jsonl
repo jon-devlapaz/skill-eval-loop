@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","model":"provider/model-terra","session_id":"session-treatment","skills":["skill"]}
+{"message":{"role":"assistant","model":"provider/model-terra","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":1,"output_tokens":1}}}

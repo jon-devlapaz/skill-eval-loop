@@ -228,12 +228,11 @@ func runAggregate(arguments []string) int {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 		return 1
 	}
-	data, err := json.MarshalIndent(report, "", "  ")
+	data, err := aggregate.Bytes(report)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 		return 1
 	}
-	data = append(data, '\n')
 	destination := *output
 	if destination == "" {
 		destination = filepath.Join(*runDir, "benchmark.json")
