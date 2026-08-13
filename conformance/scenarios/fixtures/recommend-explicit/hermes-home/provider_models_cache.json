@@ -1,0 +1,11 @@
+{
+  "openai": {
+    "models": ["gpt-sol", "openai/gpt-luna", "", 7]
+  },
+  "anthropic": {
+    "models": ["claude-main"]
+  },
+  "ignored": {
+    "models": "not-a-list"
+  }
+}

@@ -91,3 +91,22 @@ func TestParseCodexCacheFiltersVisibilityAndUsesDescription(t *testing.T) {
 		t.Fatalf("models=%#v", models)
 	}
 }
+
+func TestParseHermesCacheQualifiesProviderModelIDs(t *testing.T) {
+	models, err := ParseHermesCache([]byte(`{
+  "openai": {"models": ["gpt-sol", "openai/gpt-luna", "", 7]},
+  "anthropic": {"models": ["claude-main"]},
+  "ignored": {"models": "not-a-list"}
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Model{
+		{ID: "openai/gpt-luna", Tier: "budget", Source: "Hermes authenticated provider cache"},
+		{ID: "anthropic/claude-main", Tier: "balanced", Source: "Hermes authenticated provider cache"},
+		{ID: "openai/gpt-sol", Tier: "quality", Source: "Hermes authenticated provider cache"},
+	}
+	if !reflect.DeepEqual(models, want) {
+		t.Fatalf("models=%#v", models)
+	}
+}

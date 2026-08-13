@@ -127,11 +127,12 @@ func ParseCodexCache(data []byte) ([]Model, error) {
 func DiscoverCodex() ([]Model, error) {
 	home := os.Getenv("CODEX_HOME")
 	if home == "" {
-		userHome, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		home = filepath.Join(userHome, ".codex")
+		home = "~/.codex"
+	}
+	var err error
+	home, err = expandUser(home)
+	if err != nil {
+		return nil, err
 	}
 	cachePath := filepath.Join(home, "models_cache.json")
 	info, err := os.Stat(cachePath)
@@ -147,6 +148,60 @@ func DiscoverCodex() ([]Model, error) {
 		return nil, err
 	}
 	return uniqueSorted(models), nil
+}
+
+func ParseHermesCache(data []byte) ([]Model, error) {
+	var cache map[string]any
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, err
+	}
+	models := []Model{}
+	for provider, raw := range cache {
+		record, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		items, ok := record["models"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawModel := range items {
+			value, ok := rawModel.(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				continue
+			}
+			id := value
+			if !strings.Contains(id, "/") {
+				id = provider + "/" + id
+			}
+			models = append(models, Model{
+				ID: id, Tier: InferTier(id, ""), Source: "Hermes authenticated provider cache",
+			})
+		}
+	}
+	return uniqueSorted(models), nil
+}
+
+func DiscoverHermes() ([]Model, error) {
+	home := os.Getenv("HERMES_HOME")
+	if home == "" {
+		home = "~/.hermes"
+	}
+	var err error
+	home, err = expandUser(home)
+	if err != nil {
+		return nil, err
+	}
+	cachePath := filepath.Join(home, "provider_models_cache.json")
+	info, err := os.Stat(cachePath)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("Hermes has no authenticated provider-model cache; run `hermes model` to configure a provider, or pass --models with exact ids")
+	}
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return nil, err
+	}
+	return ParseHermesCache(data)
 }
 
 func uniqueSorted(models []Model) []Model {
@@ -180,6 +235,20 @@ func pythonString(value any) string {
 	default:
 		return fmt.Sprint(current)
 	}
+}
+
+func expandUser(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
 }
 
 func Build(input Input) (map[string]any, error) {

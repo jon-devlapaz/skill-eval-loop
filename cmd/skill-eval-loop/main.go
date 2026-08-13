@@ -98,6 +98,8 @@ func runRecommend(arguments []string) int {
 			models, err = recommend.DiscoverPi(resolved)
 		case "codex":
 			models, err = recommend.DiscoverCodex()
+		case "hermes":
+			models, err = recommend.DiscoverHermes()
 		default:
 			writeRecommendError("native model discovery is not implemented yet for this harness; pass --models with exact comma-separated ids")
 			return 1
