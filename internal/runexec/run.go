@@ -33,8 +33,8 @@ type Input struct {
 }
 
 func Run(ctx context.Context, input Input) (map[string]any, error) {
-	if input.Plan.Harness != "pi" {
-		return nil, errors.New("run execution currently supports Pi")
+	if input.Plan.Harness != "pi" && input.Plan.Harness != "claude-code" {
+		return nil, errors.New("run execution currently supports Pi and Claude Code")
 	}
 	if input.JudgeModel != "" {
 		return nil, errors.New("model-rubric execution is not implemented yet")
@@ -115,10 +115,10 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 	manifest := manifest{
 		SchemaVersion: 1, TargetSkillName: suite.SkillName,
 		Decision:          "Does forced loading of the target skill improve task success?",
-		ConditionVariable: "pi explicit skill activation versus isolated control",
+		ConditionVariable: input.Plan.Harness + " explicit skill activation versus isolated control",
 		SkillSHA256:       skillHash, SuitePath: "suite_snapshot.json", SuiteSHA256: suiteHash,
 		ProvenancePath: nil, ProvenanceSHA256: nil, RequestedModel: input.Plan.Model,
-		JudgeModel: nil, Harness: "pi", HarnessVersion: input.Plan.HarnessVersion,
+		JudgeModel: nil, Harness: input.Plan.Harness, HarnessVersion: input.Plan.HarnessVersion,
 		Observer: "headless", ToolProfile: suite.ToolProfile, ActivationMode: suite.ActivationMode,
 		ExecutionOrder: "counterbalanced_by_trial", ExecutionSchedule: schedule,
 		CaseCount: len(suite.Cases), TrialsPerCase: input.Plan.TrialsPerCase, PairCount: len(pairs),
@@ -160,7 +160,11 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 	available := []string{}
 	activation := "none"
 	if condition == "with_skill" {
-		installed = filepath.Join(conditionDir, "installed-skill", suite.SkillName)
+		if input.Plan.Harness == "claude-code" {
+			installed = filepath.Join(workspace, ".claude", "skills", suite.SkillName)
+		} else {
+			installed = filepath.Join(conditionDir, "installed-skill", suite.SkillName)
+		}
 		if err := copyPayload(input.Plan.SkillPath, installed); err != nil {
 			return conditionRecord{}, err
 		}
@@ -171,21 +175,18 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 	if err := os.MkdirAll(outputs, 0o755); err != nil {
 		return conditionRecord{}, err
 	}
-	argv := []string{input.Plan.HarnessPath, "--print", "--mode", "json", "--no-session", "--no-skills", "--no-extensions", "--no-prompt-templates", "--no-context-files", "--approve", "--model", input.Plan.Model, "--append-system-prompt", systemPrompt}
 	tools := map[string][]string{"no_tools": {}, "read_only": {"read", "grep", "find", "ls"}, "read_write": {"read", "write"}, "coding": {"read", "write", "edit", "bash", "grep", "find", "ls"}}[suite.ToolProfile]
-	if len(tools) == 0 {
-		argv = append(argv, "--no-tools")
-	} else {
-		argv = append(argv, "--tools", strings.Join(tools, ","))
-	}
 	prompt := current.Prompt
 	if condition == "with_skill" {
-		argv = append(argv, "--skill", installed)
 		if suite.ActivationMode == "forced" {
-			prompt = "/skill:" + suite.SkillName + " " + prompt
+			if input.Plan.Harness == "claude-code" {
+				prompt = "/" + suite.SkillName + " " + prompt
+			} else {
+				prompt = "/skill:" + suite.SkillName + " " + prompt
+			}
 		}
 	}
-	argv = append(argv, prompt)
+	argv := targetArgv(input.Plan, suite, tools, installed, prompt)
 	startedAt := time.Now().UTC()
 	started := time.Now()
 	result, err := processctl.Run(ctx, processctl.Options{Argv: argv, CWD: workspace, Timeout: input.Timeout})
@@ -200,7 +201,7 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 	if err := os.WriteFile(stderrPath, []byte(result.Stderr), 0o666); err != nil {
 		return conditionRecord{}, err
 	}
-	metadata, err := parsePiTrace(tracePath, suite.SkillName)
+	metadata, err := parseTrace(tracePath, suite.SkillName)
 	if err != nil {
 		return conditionRecord{}, err
 	}
@@ -266,7 +267,24 @@ type traceMetadata struct {
 	InputTokens, OutputTokens, TotalTokens any
 }
 
-func parsePiTrace(path, skillName string) (traceMetadata, error) {
+func targetArgv(plan runplan.Plan, suite *evalspec.Suite, tools []string, installed, prompt string) []string {
+	if plan.Harness == "claude-code" {
+		claudeTools := map[string]string{"no_tools": "", "read_only": "Read,Grep,Glob", "read_write": "Read,Write", "coding": "Read,Write,Edit,Bash,Grep,Glob"}[suite.ToolProfile]
+		return []string{plan.HarnessPath, "-p", "--output-format", "stream-json", "--verbose", "--model", plan.Model, "--no-session-persistence", "--setting-sources", "project", "--strict-mcp-config", "--tools", claudeTools, "--permission-mode", "bypassPermissions", "--append-system-prompt", systemPrompt, prompt}
+	}
+	argv := []string{plan.HarnessPath, "--print", "--mode", "json", "--no-session", "--no-skills", "--no-extensions", "--no-prompt-templates", "--no-context-files", "--approve", "--model", plan.Model, "--append-system-prompt", systemPrompt}
+	if len(tools) == 0 {
+		argv = append(argv, "--no-tools")
+	} else {
+		argv = append(argv, "--tools", strings.Join(tools, ","))
+	}
+	if installed != "" {
+		argv = append(argv, "--skill", installed)
+	}
+	return append(argv, prompt)
+}
+
+func parseTrace(path, skillName string) (traceMetadata, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return traceMetadata{}, err

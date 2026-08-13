@@ -5,5 +5,32 @@ if [ "${1:-}" = "--version" ]; then
   printf 'fake-claude 1.0\n'
   exit 0
 fi
+if [ "${1:-}" = "-p" ]; then
+  with_skill=false
+  for argument in "$@"; do
+    case "$argument" in
+      /skill*) with_skill=true ;;
+    esac
+  done
+  session=session-claude-control
+  response=no
+  skills='[]'
+  order=2
+  if [ "$with_skill" = true ]; then
+    session=session-claude-treatment
+    response=ok
+    skills='["skill"]'
+    order=3
+  fi
+  printf '{"executable":"fake-claude","argv":["fake-claude"' >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  for argument in "$@"; do
+    escaped=$(printf '%s' "$argument" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    printf ',"%s"' "$escaped" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  done
+  printf '],"cwd":"%s","order":%s,"status":0,"timed_out":false}\n' "$PWD" "$order" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  printf '{"type":"system","subtype":"init","model":"provider/model-terra","session_id":"%s","skills":%s}\n' "$session" "$skills"
+  printf '{"message":{"role":"assistant","model":"provider/model-terra","content":[{"type":"text","text":"%s"}],"usage":{"input_tokens":1,"output_tokens":1}}}\n' "$response"
+  exit 0
+fi
 printf 'unexpected invocation\n' >&2
 exit 9
