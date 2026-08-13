@@ -99,6 +99,43 @@ func TestAggregateAccountingMetadataMatchesFrozenPython(t *testing.T) {
 	assertPythonParity(t, run)
 }
 
+func TestAggregateRejectsIncompleteCaseTrialMatrix(t *testing.T) {
+	run := retainedRun(t)
+	mutateObject(t, filepath.Join(run, "run_manifest.json"), func(value map[string]any) { value["trials"] = []any{} })
+	_, err := Run(run)
+	if err == nil || !strings.Contains(err.Error(), "trials must be a non-empty list") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestAggregateRejectsConditionIdentityMismatch(t *testing.T) {
+	run := retainedRun(t)
+	mutateObject(t, filepath.Join(run, "run_manifest.json"), func(value map[string]any) {
+		pair := value["trials"].([]any)[0].(map[string]any)
+		conditions := pair["conditions"].(map[string]any)
+		conditions["with_skill"].(map[string]any)["case_id"] = "different"
+	})
+	_, err := Run(run)
+	if err == nil || !strings.Contains(err.Error(), "does not match its enclosing pair") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestAggregateRejectsInconsistentGradingSummaryAfterRehash(t *testing.T) {
+	run := retainedRun(t)
+	gradingPath := filepath.Join(run, "eval-case-one", "trial-001", "with_skill", "grading.json")
+	mutateObject(t, gradingPath, func(value map[string]any) { value["summary"].(map[string]any)["passed"] = 0 })
+	mutateObject(t, filepath.Join(run, "run_manifest.json"), func(value map[string]any) {
+		pair := value["trials"].([]any)[0].(map[string]any)
+		conditions := pair["conditions"].(map[string]any)
+		conditions["with_skill"].(map[string]any)["grading_sha256"] = testFileHash(t, gradingPath)
+	})
+	_, err := Run(run)
+	if err == nil || !strings.Contains(err.Error(), "summary is inconsistent") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func assertPythonParity(t *testing.T, run string) {
 	t.Helper()
 	goReport, err := Run(run)
@@ -192,6 +229,19 @@ func writeJSON(t *testing.T, path string, value any) {
 		t.Fatal(err)
 	}
 	writeFile(t, path, append(data, '\n'))
+}
+func mutateObject(t *testing.T, path string, mutation func(map[string]any)) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var value map[string]any
+	if err = json.Unmarshal(data, &value); err != nil {
+		t.Fatal(err)
+	}
+	mutation(value)
+	writeJSON(t, path, value)
 }
 func writeFile(t *testing.T, path string, data []byte) {
 	t.Helper()
