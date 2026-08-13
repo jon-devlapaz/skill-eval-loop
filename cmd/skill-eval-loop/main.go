@@ -17,6 +17,7 @@ import (
 	"github.com/jon-devlapaz/skill-eval-loop/internal/aggregate"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/audit"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/evalspec"
+	"github.com/jon-devlapaz/skill-eval-loop/internal/herdr"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/recommend"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/runexec"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/runplan"
@@ -317,6 +318,12 @@ func runRun(arguments []string) int {
 		return 1
 	}
 	if !*dryRun {
+		if *observer == "herdr" {
+			if observerErr := herdr.RequireEnvironment(); observerErr != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", observerErr)
+				return 1
+			}
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		report, runErr := runexec.Run(ctx, runexec.Input{Plan: plan, EvalsPath: *evalsPath, Timeout: time.Duration(*timeoutSeconds) * time.Second, JudgeModel: *judgeModel, JudgeTimeout: time.Duration(*judgeTimeoutSeconds) * time.Second})

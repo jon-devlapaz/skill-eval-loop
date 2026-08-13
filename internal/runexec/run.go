@@ -19,6 +19,7 @@ import (
 
 	"github.com/jon-devlapaz/skill-eval-loop/internal/aggregate"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/evalspec"
+	"github.com/jon-devlapaz/skill-eval-loop/internal/herdr"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/processctl"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/runplan"
 )
@@ -31,6 +32,7 @@ type Input struct {
 	Timeout      time.Duration
 	JudgeModel   string
 	JudgeTimeout time.Duration
+	Observer     *herdr.Observer
 }
 
 func Run(ctx context.Context, input Input) (map[string]any, error) {
@@ -53,11 +55,34 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 	if err := writeState(input.Plan.OutputDir, state{Status: "starting", Valid: false, CompletedConditions: 0}); err != nil {
 		return nil, err
 	}
-	if err := writeState(input.Plan.OutputDir, state{Status: "running", Valid: false, Observer: "headless", CompletedConditions: 0}); err != nil {
+	observerName := "headless"
+	if input.Plan.Observer.Kind == "herdr" {
+		observerName = "herdr"
+		observerCWD, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			return nil, cwdErr
+		}
+		input.Observer, err = herdr.Start(suite.SkillName, input.Plan.OutputDir, observerCWD)
+		if err != nil {
+			_ = writeState(input.Plan.OutputDir, state{Status: "failed", Valid: false, Error: err.Error(), Observer: observerName, CompletedConditions: 0})
+			return nil, err
+		}
+	}
+	observerState := state{Status: "running", Valid: false, Observer: observerName, CompletedConditions: 0}
+	if input.Observer != nil {
+		observerState.WorkspaceID = input.Observer.WorkspaceID
+		observerState.WorkspaceLabel = input.Observer.WorkspaceLabel
+	}
+	if err := writeState(input.Plan.OutputDir, observerState); err != nil {
 		return nil, err
 	}
 	fail := func(runErr error) (map[string]any, error) {
-		_ = writeState(input.Plan.OutputDir, state{Status: "failed", Valid: false, Error: runErr.Error(), Observer: "headless", CompletedConditions: completed})
+		failed := state{Status: "failed", Valid: false, Error: runErr.Error(), Observer: observerName, CompletedConditions: completed}
+		if input.Observer != nil {
+			failed.WorkspaceID, failed.WorkspaceLabel = input.Observer.WorkspaceID, input.Observer.WorkspaceLabel
+			_ = input.Observer.Finish("failed", runErr.Error(), input.Plan.OutputDir)
+		}
+		_ = writeState(input.Plan.OutputDir, failed)
 		return nil, runErr
 	}
 
@@ -100,14 +125,24 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 				record, runErr := runCondition(ctx, input, suite, current, trial, condition)
 				if runErr != nil {
 					if ctx.Err() != nil {
-						_ = writeState(input.Plan.OutputDir, state{Status: "cancelled", Valid: false, Observer: "headless", CompletedConditions: completed})
+						cancelled := state{Status: "cancelled", Valid: false, Observer: observerName, CompletedConditions: completed}
+						if input.Observer != nil {
+							cancelled.WorkspaceID, cancelled.WorkspaceLabel = input.Observer.WorkspaceID, input.Observer.WorkspaceLabel
+							input.Observer.CancelActive()
+							_ = input.Observer.Finish("cancelled", "Evaluation cancelled; partial evidence retained", input.Plan.OutputDir)
+						}
+						_ = writeState(input.Plan.OutputDir, cancelled)
 						return nil, context.Canceled
 					}
 					return fail(runErr)
 				}
 				pair.Conditions.Values[condition] = record
 				completed++
-				if err := writeState(input.Plan.OutputDir, state{Status: "running", Valid: false, Observer: "headless", CompletedConditions: completed}); err != nil {
+				running := state{Status: "running", Valid: false, Observer: observerName, CompletedConditions: completed}
+				if input.Observer != nil {
+					running.WorkspaceID, running.WorkspaceLabel = input.Observer.WorkspaceID, input.Observer.WorkspaceLabel
+				}
+				if err := writeState(input.Plan.OutputDir, running); err != nil {
 					return fail(err)
 				}
 			}
@@ -127,7 +162,7 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 		SkillSHA256:       skillHash, SuitePath: "suite_snapshot.json", SuiteSHA256: suiteHash,
 		ProvenancePath: provenancePath, ProvenanceSHA256: provenanceHash, RequestedModel: input.Plan.Model,
 		JudgeModel: optionalString(input.JudgeModel), Harness: input.Plan.Harness, HarnessVersion: input.Plan.HarnessVersion,
-		Observer: "headless", ToolProfile: suite.ToolProfile, ActivationMode: suite.ActivationMode,
+		Observer: observerName, ToolProfile: suite.ToolProfile, ActivationMode: suite.ActivationMode,
 		ExecutionOrder: "counterbalanced_by_trial", ExecutionSchedule: schedule,
 		CaseCount: len(suite.Cases), TrialsPerCase: input.Plan.TrialsPerCase, PairCount: len(pairs),
 		ReferenceValidation: references, Trials: pairs,
@@ -152,7 +187,14 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 	if valid {
 		status = "completed"
 	}
-	if err := writeState(input.Plan.OutputDir, state{Status: status, Valid: valid, Verdict: verdict, Observer: "headless", CompletedConditions: completed}); err != nil {
+	finalState := state{Status: status, Valid: valid, Verdict: verdict, Observer: observerName, CompletedConditions: completed}
+	if input.Observer != nil {
+		finalState.WorkspaceID, finalState.WorkspaceLabel = input.Observer.WorkspaceID, input.Observer.WorkspaceLabel
+		if err := input.Observer.Finish(status, "Verdict: "+verdict, input.Plan.OutputDir); err != nil {
+			return fail(err)
+		}
+	}
+	if err := writeState(input.Plan.OutputDir, finalState); err != nil {
 		return nil, err
 	}
 	return report, nil
@@ -212,17 +254,32 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 	}
 	startedAt := time.Now().UTC()
 	started := time.Now()
+	tracePath := filepath.Join(outputs, "trace.jsonl")
+	stderrPath := filepath.Join(outputs, "stderr.txt")
+	title := fmt.Sprintf("%s · %s · trial %d", condition, current.ID, trial)
+	if input.Observer != nil {
+		role := "control"
+		if condition == "with_skill" {
+			role = "with_skill"
+		}
+		if err := input.Observer.Begin(role, title, tracePath, stderrPath); err != nil {
+			return conditionRecord{}, err
+		}
+	}
 	result, err := processctl.Run(ctx, processctl.Options{Argv: argv, CWD: workspace, Env: environment, Timeout: input.Timeout})
 	if err != nil {
 		return conditionRecord{}, err
 	}
-	tracePath := filepath.Join(outputs, "trace.jsonl")
-	stderrPath := filepath.Join(outputs, "stderr.txt")
 	if err := os.WriteFile(tracePath, []byte(result.Stdout), 0o666); err != nil {
 		return conditionRecord{}, err
 	}
 	if err := os.WriteFile(stderrPath, []byte(result.Stderr), 0o666); err != nil {
 		return conditionRecord{}, err
+	}
+	if input.Observer != nil {
+		if err := input.Observer.End(title, result.ExitCode); err != nil {
+			return conditionRecord{}, err
+		}
 	}
 	metadata, err := parseTrace(tracePath, suite.SkillName)
 	if err != nil {
@@ -770,16 +827,27 @@ func runModelGrade(ctx context.Context, input Input, current evalspec.Case, grad
 	if err != nil {
 		return nil, judgeRecord{}, err
 	}
+	title := "Judge · " + current.ID + " · " + grader["name"].(string)
+	stderrPath := strings.TrimSuffix(tracePath, filepath.Ext(tracePath)) + ".stderr.txt"
+	if input.Observer != nil {
+		if err := input.Observer.Begin("judge_results", title, tracePath, stderrPath); err != nil {
+			return nil, judgeRecord{}, err
+		}
+	}
 	result, err := processctl.Run(ctx, processctl.Options{Argv: argv, Env: environment, Timeout: input.JudgeTimeout})
 	if err != nil {
 		return nil, judgeRecord{}, err
 	}
-	stderrPath := strings.TrimSuffix(tracePath, filepath.Ext(tracePath)) + ".stderr.txt"
 	if err := os.WriteFile(tracePath, []byte(result.Stdout), 0o666); err != nil {
 		return nil, judgeRecord{}, err
 	}
 	if err := os.WriteFile(stderrPath, []byte(result.Stderr), 0o666); err != nil {
 		return nil, judgeRecord{}, err
+	}
+	if input.Observer != nil {
+		if err := input.Observer.End(title, result.ExitCode); err != nil {
+			return nil, judgeRecord{}, err
+		}
 	}
 	if result.TimedOut {
 		return nil, judgeRecord{}, fmt.Errorf("judge timed out after %g seconds; see %s", input.JudgeTimeout.Seconds(), tracePath)
@@ -1146,6 +1214,8 @@ type state struct {
 	Error               string `json:"error,omitempty"`
 	Observer            string `json:"observer,omitempty"`
 	CompletedConditions int    `json:"completed_conditions"`
+	WorkspaceID         string `json:"workspace_id,omitempty"`
+	WorkspaceLabel      string `json:"workspace_label,omitempty"`
 }
 type sensitiveGrader struct{ Name, Type string }
 
