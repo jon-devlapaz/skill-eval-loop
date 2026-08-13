@@ -64,23 +64,36 @@ ok'
   fi
 	status=0
 	timed_out=false
+	output_model=$model
 	case "$argument" in
 	  *TIMEOUT*) status=124; timed_out=true ;;
+	  *MISMATCH*) output_model=provider/model-wrong ;;
 	esac
+	if [ "$is_judge" = true ]; then
+	  case "$argument" in *JUDGE_WRONG*) output_model=provider/judge-wrong ;; esac
+	fi
   printf '{"executable":"fake-pi","argv":["fake-pi"' >> "$SKILL_EVAL_CONFORMANCE_LOG"
   for argument in "$@"; do
     escaped=$(printf '%s' "$argument" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN { ORS="" } NR > 1 { printf "\\n" } { printf "%s", $0 }')
     printf ',"%s"' "$escaped" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   done
 	printf '],"cwd":"%s","order":%s,"status":%s,"timed_out":%s}\n' "$PWD" "$order" "$status" "$timed_out" >> "$SKILL_EVAL_CONFORMANCE_LOG"
-	printf '{"type":"system","subtype":"init","model":"%s","session_id":"%s","skills":%s}\n' "$model" "$session" "$skills"
+	missing_attestation=false
+	case "$argument" in *MISSING_ATTESTATION*) missing_attestation=true ;; esac
+	if [ "$missing_attestation" = false ]; then
+	  printf '{"type":"system","subtype":"init","model":"%s","session_id":"%s","skills":%s}\n' "$output_model" "$session" "$skills"
+	else
+	  printf 'malformed trace\n'
+	fi
 	if [ "$with_skill" = true ]; then
 	  case "$argument" in *AUTO_USE*) printf '{"toolName":"skill","path":"/fixture/%s/SKILL.md"}\n' "$skill_name" ;; esac
 	fi
 	if [ "$timed_out" = true ]; then
 	  sleep 30
 	fi
-	printf '{"message":{"role":"assistant","model":"%s","content":[{"type":"text","text":"%s"}],"usage":{"input_tokens":1,"output_tokens":1}}}\n' "$model" "$response"
+	if [ "$missing_attestation" = false ]; then
+	  printf '{"message":{"role":"assistant","model":"%s","content":[{"type":"text","text":"%s"}],"usage":{"input_tokens":1,"output_tokens":1}}}\n' "$output_model" "$response"
+	fi
   exit 0
 fi
 printf 'unexpected invocation\n' >&2

@@ -242,8 +242,11 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 			return conditionRecord{}, fmt.Errorf("codex persisted attestation trace missing for requested model %s; retained trace at %s", input.Plan.Model, tracePath)
 		}
 	}
-	if !metadata.ModelAttested || !strings.EqualFold(metadata.ActualModel, input.Plan.Model) {
-		return conditionRecord{}, fmt.Errorf("target trace model does not match requested model %s; retained trace at %s", input.Plan.Model, tracePath)
+	if !metadata.ModelAttested {
+		return conditionRecord{}, fmt.Errorf("target model %s was not attested; see %s", input.Plan.Model, tracePath)
+	}
+	if !strings.EqualFold(metadata.ActualModel, input.Plan.Model) {
+		return conditionRecord{}, fmt.Errorf("requested target model %s but attested %s; see %s", input.Plan.Model, metadata.ActualModel, tracePath)
 	}
 	if input.Plan.Harness == "codex" && condition == "with_skill" && suite.ActivationMode == "forced" && !metadata.SkillExplicitlyAccessed {
 		return conditionRecord{}, fmt.Errorf("forced target skill %s was not explicitly accessed; see %s", suite.SkillName, tracePath)
