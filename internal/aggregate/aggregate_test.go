@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jon-devlapaz/skill-eval-loop/internal/skillpayload"
 )
 
 func TestAggregateSmallestValidRetainedPythonRun(t *testing.T) {
@@ -184,6 +186,7 @@ func retainedRun(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("# Fixture\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(skillDir, "references", "guide.md"), []byte("supporting guidance\n"))
 	conditions := map[string]any{}
 	conditions["without_skill"] = condition(t, root, "without_skill", false, false)
 	conditions["with_skill"] = condition(t, root, "with_skill", true, true)
@@ -268,15 +271,11 @@ func testFileHash(t *testing.T, path string) string {
 }
 func testPayloadHash(t *testing.T, root string) string {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(root, "SKILL.md"))
+	hash, err := skillpayload.Hash(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash := sha256.New()
-	hash.Write([]byte("SKILL.md\x00-\x00"))
-	hash.Write(data)
-	hash.Write([]byte{0})
-	return hex.EncodeToString(hash.Sum(nil))
+	return hash
 }
 func rel(root, path string) string {
 	value, _ := filepath.Rel(root, path)

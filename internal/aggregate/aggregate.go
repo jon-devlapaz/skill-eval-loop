@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/jon-devlapaz/skill-eval-loop/internal/skillpayload"
 )
 
 func Run(runDir string) (map[string]any, error) {
@@ -431,7 +433,7 @@ func validateCondition(root string, record map[string]any, condition, label, cas
 		if err != nil {
 			return conditionResult{}, err
 		}
-		if hash, err := payloadHash(path); err != nil || hash != skillHash {
+		if hash, err := skillpayload.Hash(path); err != nil || hash != skillHash {
 			return conditionResult{}, fmt.Errorf("%s installed payload differs from evaluated skill", prefix)
 		}
 		if len(available) != 1 || available[0] != skillName {
@@ -568,17 +570,6 @@ func traceEvidence(paths []string, skill string) (string, bool, bool, error) {
 		}
 	}
 	return model, injected, accessed, nil
-}
-func payloadHash(root string) (string, error) {
-	data, err := os.ReadFile(filepath.Join(root, "SKILL.md"))
-	if err != nil {
-		return "", err
-	}
-	hash := sha256.New()
-	hash.Write([]byte("SKILL.md\x00-\x00"))
-	hash.Write(data)
-	hash.Write([]byte{0})
-	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 func artifactPath(root string, value any, label string) (string, error) {
 	text, ok := value.(string)

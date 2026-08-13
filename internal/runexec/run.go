@@ -22,6 +22,7 @@ import (
 	"github.com/jon-devlapaz/skill-eval-loop/internal/herdr"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/processctl"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/runplan"
+	"github.com/jon-devlapaz/skill-eval-loop/internal/skillpayload"
 )
 
 const systemPrompt = "Work only inside the current workspace. Complete the user's task with the available capabilities."
@@ -106,7 +107,7 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 	if err != nil {
 		return fail(err)
 	}
-	skillHash, err := payloadHash(input.Plan.SkillPath)
+	skillHash, err := skillpayload.Hash(input.Plan.SkillPath)
 	if err != nil {
 		return fail(err)
 	}
@@ -1045,63 +1046,8 @@ func fileHash(path string) (string, error) {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
 }
-func payloadHash(root string) (string, error) {
-	files, err := payloadFiles(root)
-	if err != nil {
-		return "", err
-	}
-	hash := sha256.New()
-	for _, path := range files {
-		relative, _ := filepath.Rel(root, path)
-		hash.Write([]byte(filepath.ToSlash(relative)))
-		hash.Write([]byte{0})
-		info, _ := os.Stat(path)
-		if info.Mode()&0o111 != 0 {
-			hash.Write([]byte("x"))
-		} else {
-			hash.Write([]byte("-"))
-		}
-		hash.Write([]byte{0})
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return "", err
-		}
-		hash.Write(data)
-		hash.Write([]byte{0})
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-func payloadFiles(root string) ([]string, error) {
-	files := []string{}
-	err := filepath.Walk(root, func(path string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symlinked skill payload entry is not allowed: %s", path)
-		}
-		if path == root {
-			return nil
-		}
-		relative, _ := filepath.Rel(root, path)
-		for _, component := range strings.Split(filepath.ToSlash(relative), "/") {
-			if map[string]bool{"evals": true, "tests": true, "__pycache__": true, ".DS_Store": true}[component] {
-				if info.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-		}
-		if info.Mode().IsRegular() && filepath.Ext(path) != ".pyc" {
-			files = append(files, path)
-		}
-		return nil
-	})
-	sort.Strings(files)
-	return files, err
-}
 func copyPayload(source, destination string) error {
-	files, err := payloadFiles(source)
+	files, err := skillpayload.Files(source)
 	if err != nil {
 		return err
 	}
