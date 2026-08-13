@@ -44,8 +44,8 @@ count without creating a run or calling a model.
 "$SKILL_EVAL_DIR/scripts/skill-eval-loop" run \
   --skill-path /path/to/target-skill \
   --harness codex \
-  --target-model MODEL_ID \
-  --grader-model MODEL_ID \
+  --model MODEL_ID \
+  --judge-model MODEL_ID \
   --dry-run
 ```
 

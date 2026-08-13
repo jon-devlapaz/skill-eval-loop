@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -177,6 +178,12 @@ func Run(runDir string) (map[string]any, error) {
 	if count, _ := intValue(manifest["pair_count"]); count != expected || len(trials) != expected {
 		return nil, fmt.Errorf("manifest does not contain the complete case/trial matrix")
 	}
+	expectedPairs := map[string]bool{}
+	for _, caseID := range caseIDs {
+		for trial := 1; trial <= trialsPerCase; trial++ {
+			expectedPairs[fmt.Sprintf("%s/%d", caseID, trial)] = true
+		}
+	}
 	totals := map[string]int{"without_skill": 0, "with_skill": 0}
 	pairOutcomes := map[string]int{"improved": 0, "regressed": 0, "tied_pass": 0, "tied_fail": 0}
 	seen := map[string]bool{}
@@ -185,6 +192,8 @@ func Run(runDir string) (map[string]any, error) {
 	routing := map[string]int{"expected_injections": 0, "available": 0, "injection_attested": 0, "explicit_accesses": 0, "control_exposures": 0, "decisions_scored": 0, "decisions_correct": 0, "false_positives": 0, "false_negatives": 0}
 	conditionRecords := map[string][]map[string]any{"without_skill": {}, "with_skill": {}}
 	conditionJudges := []map[string]any{}
+	graderOrder := map[string][]string{}
+	graderPasses := map[string]map[string]map[string]int{}
 	for _, rawPair := range trials {
 		pair, ok := rawPair.(map[string]any)
 		if !ok {
@@ -196,6 +205,9 @@ func Run(runDir string) (map[string]any, error) {
 			return nil, fmt.Errorf("manifest trial needs case_id and integer trial")
 		}
 		key := fmt.Sprintf("%s/%d", caseID, trial)
+		if !expectedPairs[key] {
+			return nil, fmt.Errorf("manifest does not contain the complete case/trial matrix")
+		}
 		if seen[key] {
 			return nil, fmt.Errorf("duplicate pair: %s/%d", caseID, trial)
 		}
@@ -226,6 +238,9 @@ func Run(runDir string) (map[string]any, error) {
 			}
 			if result.success {
 				totals[condition]++
+			}
+			if err := recordGraderResults(caseID, condition, result.graders, graderOrder, graderPasses); err != nil {
+				return nil, fmt.Errorf("%s.%s: %w", label, condition, err)
 			}
 		}
 		without, with := observed["without_skill"].success, observed["with_skill"].success
@@ -330,13 +345,30 @@ func Run(runDir string) (map[string]any, error) {
 			selection = "passed"
 		}
 	}
+	graderOutcomes := []any{}
+	for _, caseID := range caseIDs {
+		for _, grader := range graderOrder[caseID] {
+			withoutPassed := graderPasses[caseID][grader]["without_skill"]
+			withPassed := graderPasses[caseID][grader]["with_skill"]
+			withoutRate := float64(withoutPassed) / float64(trialsPerCase)
+			withRate := float64(withPassed) / float64(trialsPerCase)
+			graderOutcomes = append(graderOutcomes, map[string]any{
+				"case_id":       caseID,
+				"grader":        grader,
+				"without_skill": map[string]any{"passed": withoutPassed, "total": trialsPerCase, "rate": round3(withoutRate)},
+				"with_skill":    map[string]any{"passed": withPassed, "total": trialsPerCase, "rate": round3(withRate)},
+				"delta":         round3(withRate - withoutRate),
+				"pattern":       graderPattern(withoutRate, withRate),
+			})
+		}
+	}
 	claim := stringDefault(suite["grader_discrimination"], "none")
 	limits := []any{"This is a local paired diagnostic, not a distribution or significance claim."}
 	if claim == "none" {
 		limits = append(limits, "The suite did not declare grader_discrimination=case_contrast; optional counters do not prove every response-sensitive grader distinguishes a known good/bad pair.")
 	}
 	limits = append(limits, harness+" skill exposure is configured by the selected adapter; runtime attestation and tool-profile precision vary by harness.", "Condition order is counterbalanced by trial; temporal drift remains possible.")
-	return map[string]any{"schema_version": 2, "skill_name": skillName, "verdict": verdict, "outcome_verdict": outcome, "valid": true, "artifact_valid": true, "mechanism_valid": len(mechanismGaps) == 0, "runtime_attestation_complete": len(runtimeGaps) == 0, "activation_mode": activation, "grader_discrimination": map[string]any{"claim": claim, "validated": claim == "case_contrast"}, "selection_verdict": selection, "invalid_reasons": []any{}, "mechanism_gaps": stringsAny(sortedUnique(mechanismGaps)), "runtime_attestation_gaps": stringsAny(sortedUnique(runtimeGaps)), "pair_count": pairCount, "task_success": map[string]any{"without_skill": map[string]any{"passed": totals["without_skill"], "rate": round3(controlRate)}, "with_skill": map[string]any{"passed": totals["with_skill"], "rate": round3(treatmentRate)}, "delta": round3(delta), "pair_outcomes": pairOutcomes}, "routing": map[string]any{"expected_injections": routing["expected_injections"], "available": routing["available"], "injection_attested": routing["injection_attested"], "explicit_accesses": routing["explicit_accesses"], "control_exposures": routing["control_exposures"], "decisions_scored": routing["decisions_scored"], "decisions_correct": routing["decisions_correct"], "false_positives": routing["false_positives"], "false_negatives": routing["false_negatives"], "accuracy": accuracy}, "operations": operations, "limits": limits}, nil
+	return map[string]any{"schema_version": 2, "skill_name": skillName, "verdict": verdict, "outcome_verdict": outcome, "valid": true, "artifact_valid": true, "mechanism_valid": len(mechanismGaps) == 0, "runtime_attestation_complete": len(runtimeGaps) == 0, "activation_mode": activation, "grader_discrimination": map[string]any{"claim": claim, "validated": claim == "case_contrast"}, "selection_verdict": selection, "invalid_reasons": []any{}, "mechanism_gaps": stringsAny(sortedUnique(mechanismGaps)), "runtime_attestation_gaps": stringsAny(sortedUnique(runtimeGaps)), "pair_count": pairCount, "task_success": map[string]any{"without_skill": map[string]any{"passed": totals["without_skill"], "rate": round3(controlRate)}, "with_skill": map[string]any{"passed": totals["with_skill"], "rate": round3(treatmentRate)}, "delta": round3(delta), "pair_outcomes": pairOutcomes}, "grader_outcomes": graderOutcomes, "routing": map[string]any{"expected_injections": routing["expected_injections"], "available": routing["available"], "injection_attested": routing["injection_attested"], "explicit_accesses": routing["explicit_accesses"], "control_exposures": routing["control_exposures"], "decisions_scored": routing["decisions_scored"], "decisions_correct": routing["decisions_correct"], "false_positives": routing["false_positives"], "false_negatives": routing["false_negatives"], "accuracy": accuracy}, "operations": operations, "limits": limits}, nil
 }
 
 func recordString(value any, key string) (string, bool) {
@@ -351,6 +383,52 @@ func recordString(value any, key string) (string, bool) {
 type conditionResult struct {
 	success, available, injected, accessed bool
 	activation                             string
+	graders                                []graderResult
+}
+
+type graderResult struct {
+	name   string
+	passed bool
+}
+
+func recordGraderResults(caseID, condition string, results []graderResult, order map[string][]string, passes map[string]map[string]map[string]int) error {
+	if _, ok := passes[caseID]; !ok {
+		order[caseID] = make([]string, len(results))
+		passes[caseID] = map[string]map[string]int{}
+		for index, result := range results {
+			order[caseID][index] = result.name
+			passes[caseID][result.name] = map[string]int{"without_skill": 0, "with_skill": 0}
+		}
+	}
+	if len(results) != len(order[caseID]) {
+		return fmt.Errorf("grader set does not match other target conditions")
+	}
+	seen := map[string]bool{}
+	for _, result := range results {
+		if _, ok := passes[caseID][result.name]; !ok || seen[result.name] {
+			return fmt.Errorf("grader set does not match other target conditions")
+		}
+		seen[result.name] = true
+		if result.passed {
+			passes[caseID][result.name][condition]++
+		}
+	}
+	return nil
+}
+
+func graderPattern(withoutRate, withRate float64) string {
+	switch {
+	case withoutRate == 1 && withRate == 1:
+		return "both_pass"
+	case withoutRate == 0 && withRate == 0:
+		return "both_fail"
+	case withoutRate == 0 && withRate == 1:
+		return "treatment_only"
+	case withoutRate == 1 && withRate == 0:
+		return "control_only"
+	default:
+		return "variable"
+	}
 }
 
 func validateJudgeRecords(root string, value any, expected int, label, requested string) ([]map[string]any, error) {
@@ -416,7 +494,7 @@ func validateCondition(root string, record map[string]any, condition, label, cas
 	if err != nil {
 		return conditionResult{}, err
 	}
-	passed, err := validateGrading(gradingPath, prefix)
+	passed, graders, err := validateGrading(gradingPath, prefix)
 	if err != nil {
 		return conditionResult{}, err
 	}
@@ -456,7 +534,7 @@ func validateCondition(root string, record map[string]any, condition, label, cas
 		return conditionResult{}, fmt.Errorf("%s model mismatch", prefix)
 	}
 	activation, _ := record["skill_activation"].(string)
-	return conditionResult{success: success, available: len(available) == 1, injected: injected, accessed: accessed, activation: activation}, nil
+	return conditionResult{success: success, available: len(available) == 1, injected: injected, accessed: accessed, activation: activation, graders: graders}, nil
 }
 func requireHash(root string, record map[string]any, stem, label string) (string, error) {
 	path, err := artifactPath(root, record[stem+"_path"], label+"."+stem+"_path")
@@ -476,35 +554,37 @@ func requireHash(root string, record map[string]any, stem, label string) (string
 	}
 	return path, nil
 }
-func validateGrading(path, label string) (bool, error) {
+func validateGrading(path, label string) (bool, []graderResult, error) {
 	value, err := readObject(path)
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	items, ok := value["expectations"].([]any)
 	if !ok || len(items) == 0 {
-		return false, fmt.Errorf("%s.expectations must be a non-empty list", label)
+		return false, nil, fmt.Errorf("%s.expectations must be a non-empty list", label)
 	}
 	summary, ok := value["summary"].(map[string]any)
 	if !ok {
-		return false, fmt.Errorf("%s.summary must be an object", label)
+		return false, nil, fmt.Errorf("%s.summary must be an object", label)
 	}
 	passed := 0
 	seen := map[string]bool{}
+	results := make([]graderResult, 0, len(items))
 	for _, raw := range items {
 		item, ok := raw.(map[string]any)
 		if !ok {
-			return false, fmt.Errorf("%s expectation invalid", label)
+			return false, nil, fmt.Errorf("%s expectation invalid", label)
 		}
 		name, _ := item["text"].(string)
 		if name == "" || seen[name] {
-			return false, fmt.Errorf("%s expectation name missing or duplicate", label)
+			return false, nil, fmt.Errorf("%s expectation name missing or duplicate", label)
 		}
 		seen[name] = true
 		value, ok := item["passed"].(bool)
 		if !ok {
-			return false, fmt.Errorf("%s expectation passed must be boolean", label)
+			return false, nil, fmt.Errorf("%s expectation passed must be boolean", label)
 		}
+		results = append(results, graderResult{name: name, passed: value})
 		if value {
 			passed++
 		}
@@ -515,9 +595,9 @@ func validateGrading(path, label string) (bool, error) {
 	st, _ := intValue(summary["total"])
 	rate, _ := summary["pass_rate"].(float64)
 	if sp != passed || sf != total-passed || st != total || rate != float64(passed)/float64(total) {
-		return false, fmt.Errorf("%s.summary is inconsistent with expectations", label)
+		return false, nil, fmt.Errorf("%s.summary is inconsistent with expectations", label)
 	}
-	return passed == total, nil
+	return passed == total, results, nil
 }
 func traceEvidence(paths []string, skill string) (string, bool, bool, error) {
 	model := ""
@@ -714,4 +794,4 @@ func stringsAny(values []string) []any {
 	}
 	return result
 }
-func round3(value float64) float64 { return float64(int(value*1000+0.5)) / 1000 }
+func round3(value float64) float64 { return math.Round(value*1000) / 1000 }

@@ -255,8 +255,11 @@ require `run_state.json` to report `"status": "cancelled"` and
 Complete when: the pilot pair finishes and `run_manifest.json` plus
 `benchmark.json` exist. For an invalid run, preserve evidence, report the
 cause, and start a new run only after correcting it. For a valid pilot, report
-observed counts, routing evidence, actual cost, and limits, then ask whether to
-scale to the user's confirmed trial count in a new run.
+observed counts, routing evidence, meaningful `grader_outcomes` movement when
+present, actual cost, and limits. Keep the case and outcome verdict
+authoritative: grader-level movement is diagnostic and cannot turn a complete
+case failure into a pass. Then ask whether to scale to the user's confirmed
+trial count in a new run.
 
 ### 7. Interpret and (optionally) revalidate
 

@@ -23,6 +23,7 @@ type benchmarkOutput struct {
 	RuntimeAttestationGaps     []string             `json:"runtime_attestation_gaps"`
 	PairCount                  int                  `json:"pair_count"`
 	TaskSuccess                taskSuccessOutput    `json:"task_success"`
+	GraderOutcomes             []graderOutcome      `json:"grader_outcomes"`
 	Routing                    routingOutput        `json:"routing"`
 	Operations                 operationsOutput     `json:"operations"`
 	Limits                     []string             `json:"limits"`
@@ -46,6 +47,19 @@ type taskSuccessOutput struct {
 	WithSkill    conditionSuccess     `json:"with_skill"`
 	Delta        evalspec.PythonFloat `json:"delta"`
 	PairOutcomes pairOutcomesOutput   `json:"pair_outcomes"`
+}
+type graderOutcome struct {
+	CaseID       string               `json:"case_id"`
+	Grader       string               `json:"grader"`
+	WithoutSkill graderSuccessOutput  `json:"without_skill"`
+	WithSkill    graderSuccessOutput  `json:"with_skill"`
+	Delta        evalspec.PythonFloat `json:"delta"`
+	Pattern      string               `json:"pattern"`
+}
+type graderSuccessOutput struct {
+	Passed int                  `json:"passed"`
+	Total  int                  `json:"total"`
+	Rate   evalspec.PythonFloat `json:"rate"`
 }
 type routingOutput struct {
 	ExpectedInjections int                   `json:"expected_injections"`

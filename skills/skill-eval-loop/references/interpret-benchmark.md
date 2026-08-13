@@ -17,6 +17,15 @@ run. Report only local paired evidence.
 - `verdict` — top-level result; becomes `invalid` or `mechanism_unconfirmed`
   when those boundaries fail.
 - `task_success.delta` — treatment rate minus control rate.
+- `grader_outcomes` — deterministic per-case, per-grader target-condition
+  results. Each ordered record names `case_id` and `grader`, reports
+  `without_skill` and `with_skill` `{passed, total, rate}`, and includes the
+  treatment-minus-control `delta` plus one pattern:
+  - `both_pass` — both condition rates are exactly 1.
+  - `both_fail` — both condition rates are exactly 0.
+  - `treatment_only` — control rate is 0 and treatment rate is 1.
+  - `control_only` — control rate is 1 and treatment rate is 0.
+  - `variable` — any partially passing or otherwise mixed multi-trial result.
 - `selection_verdict` and `routing.accuracy` — trace-visible access only, for
   autonomous schema-3 suites.
 - `grader_discrimination` — `case_contrast` is validated only when every
@@ -50,8 +59,17 @@ outcome as separate evidence layers.
 
 Always report those layers separately: artifact validity, mechanism validity,
 runtime attestation, outcome, autonomous selection when measured, usage with
-coverage, and the unproven list. `mechanism_unconfirmed` means attribution is
-unproven; it does not mean the skill failed to improve the observed outcome.
+coverage, meaningful grader-level movement when present, and the unproven list.
+`mechanism_unconfirmed` means attribution is unproven; it does not mean the
+skill failed to improve the observed outcome.
+
+The case verdict still requires every grader to pass. A treatment can therefore
+improve one grader while both conditions fail the complete case, producing a
+legitimate `no_difference` outcome with a `treatment_only` grader record. This
+is diagnostic movement, not an evaluator failure, and it does not override the
+case or outcome verdict. Do not infer causal attribution, statistical
+significance, suite quality, or a need for more model calls from one grader
+delta.
 
 Leave unproven: causal attribution, statistical significance, distribution
 readiness, security approval, and blind-review independence. Condition order is
