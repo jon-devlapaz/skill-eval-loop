@@ -100,6 +100,9 @@ func runRecommend(arguments []string) int {
 			models, err = recommend.DiscoverCodex()
 		case "hermes":
 			models, err = recommend.DiscoverHermes()
+		case "claude-code":
+			writeRecommendError("Claude Code does not expose a stable non-interactive model inventory; after `claude auth status`, pass --models with the exact ids shown by its model picker")
+			return 1
 		default:
 			writeRecommendError("native model discovery is not implemented yet for this harness; pass --models with exact comma-separated ids")
 			return 1
@@ -126,7 +129,10 @@ func runRecommend(arguments []string) int {
 }
 
 func writeRecommendError(message string) {
-	data, _ := json.MarshalIndent(map[string]any{"valid": false, "error": message}, "", "  ")
+	data, _ := json.MarshalIndent(struct {
+		Valid bool   `json:"valid"`
+		Error string `json:"error"`
+	}{Valid: false, Error: message}, "", "  ")
 	os.Stdout.Write(append(data, '\n'))
 }
 
