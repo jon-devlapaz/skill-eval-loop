@@ -63,6 +63,44 @@ func TestAggregateRejectsArtifactSymlinkEscape(t *testing.T) {
 
 func TestAggregateMatchesFrozenPythonReport(t *testing.T) {
 	run := retainedRun(t)
+	assertPythonParity(t, run)
+}
+
+func TestAggregateAccountingMetadataMatchesFrozenPython(t *testing.T) {
+	run := retainedRun(t)
+	suitePath := filepath.Join(run, "suite_snapshot.json")
+	var suite map[string]any
+	data, err := os.ReadFile(suitePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = json.Unmarshal(data, &suite); err != nil {
+		t.Fatal(err)
+	}
+	caseValue := suite["cases"].([]any)[0].(map[string]any)
+	caseValue["model_rubric_count"] = 0
+	caseValue["counter_reference_declared"] = false
+	writeJSON(t, suitePath, suite)
+	manifestPath := filepath.Join(run, "run_manifest.json")
+	data, err = os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest map[string]any
+	if err = json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest["suite_sha256"] = testFileHash(t, suitePath)
+	manifest["reference_validation"] = []any{map[string]any{
+		"case_id": "case-one", "valid": true, "judge_records": []any{},
+		"grading": map[string]any{"expectations": []any{map[string]any{"text": "contains ok", "passed": true, "grader": "response_contains"}}, "summary": map[string]any{"passed": 1, "failed": 0, "total": 1, "pass_rate": 1.0}},
+	}}
+	writeJSON(t, manifestPath, manifest)
+	assertPythonParity(t, run)
+}
+
+func assertPythonParity(t *testing.T, run string) {
+	t.Helper()
 	goReport, err := Run(run)
 	if err != nil {
 		t.Fatal(err)

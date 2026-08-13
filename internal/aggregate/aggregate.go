@@ -61,6 +61,9 @@ func Run(runDir string) (map[string]any, error) {
 		return nil, fmt.Errorf("suite snapshot must contain cases")
 	}
 	caseIDs := []string{}
+	accountingAvailable := true
+	modelRubricTotal := 0
+	counterModelRubricTotal := 0
 	for _, raw := range cases {
 		item, ok := raw.(map[string]any)
 		if !ok {
@@ -71,6 +74,16 @@ func Run(runDir string) (map[string]any, error) {
 			return nil, fmt.Errorf("suite snapshot cases must have ids")
 		}
 		caseIDs = append(caseIDs, id)
+		count, countOK := intValue(item["model_rubric_count"])
+		declared, declaredOK := item["counter_reference_declared"].(bool)
+		if !countOK || count < 0 || !declaredOK {
+			accountingAvailable = false
+		} else {
+			modelRubricTotal += count
+			if declared {
+				counterModelRubricTotal += count
+			}
+		}
 	}
 	trialsPerCase, ok := intValue(manifest["trials_per_case"])
 	if !ok || trialsPerCase < 1 {
@@ -180,6 +193,16 @@ func Run(runDir string) (map[string]any, error) {
 		verdict = "mechanism_unconfirmed"
 	}
 	operations := map[string]any{"without_skill": usage(conditionRecords["without_skill"], pairCount), "with_skill": usage(conditionRecords["with_skill"], pairCount), "condition_judges": unknownUsage(), "references": unknownUsage(), "counter_references": unknownUsage(), "full": unknownUsage()}
+	if accountingAvailable {
+		conditionJudges := modelRubricTotal * 2 * trialsPerCase
+		references := modelRubricTotal
+		counters := counterModelRubricTotal
+		full := pairCount*2 + conditionJudges + references + counters
+		operations["condition_judges"] = usageBucket(nil, conditionJudges)
+		operations["references"] = usageBucket(nil, references)
+		operations["counter_references"] = usageBucket(nil, counters)
+		operations["full"] = usageBucket(append(append([]map[string]any{}, conditionRecords["without_skill"]...), conditionRecords["with_skill"]...), full)
+	}
 	return map[string]any{"schema_version": 2, "skill_name": skillName, "verdict": verdict, "outcome_verdict": outcome, "valid": true, "artifact_valid": true, "mechanism_valid": len(mechanismGaps) == 0, "runtime_attestation_complete": len(runtimeGaps) == 0, "activation_mode": activation, "grader_discrimination": map[string]any{"claim": stringDefault(suite["grader_discrimination"], "none"), "validated": false}, "selection_verdict": "not_measured", "invalid_reasons": []any{}, "mechanism_gaps": stringsAny(sortedUnique(mechanismGaps)), "runtime_attestation_gaps": stringsAny(sortedUnique(runtimeGaps)), "pair_count": pairCount, "task_success": map[string]any{"without_skill": map[string]any{"passed": totals["without_skill"], "rate": round3(controlRate)}, "with_skill": map[string]any{"passed": totals["with_skill"], "rate": round3(treatmentRate)}, "delta": round3(delta), "pair_outcomes": pairOutcomes}, "routing": map[string]any{"expected_injections": routing["expected_injections"], "available": routing["available"], "injection_attested": routing["injection_attested"], "explicit_accesses": routing["explicit_accesses"], "control_exposures": routing["control_exposures"], "decisions_scored": 0, "decisions_correct": 0, "false_positives": 0, "false_negatives": 0, "accuracy": nil}, "operations": operations, "limits": []any{"This is a local paired diagnostic, not a distribution or significance claim.", "The suite did not declare grader_discrimination=case_contrast; optional counters do not prove every response-sensitive grader distinguishes a known good/bad pair.", "pi skill exposure is configured by the selected adapter; runtime attestation and tool-profile precision vary by harness.", "Condition order is counterbalanced by trial; temporal drift remains possible."}}, nil
 }
 
@@ -438,6 +461,12 @@ func stringSlice(value any) []string {
 }
 func usage(records []map[string]any, expected int) map[string]any {
 	return map[string]any{"errors": 0, "timeouts": 0, "tokens": nil, "cost": nil, "tokens_coverage": map[string]any{"reported": 0, "expected": expected}, "cost_coverage": map[string]any{"reported": 0, "expected": expected}}
+}
+func usageBucket(records []map[string]any, expected int) map[string]any {
+	if expected == 0 && len(records) == 0 {
+		return map[string]any{"tokens": 0, "cost": 0.0, "tokens_coverage": map[string]any{"reported": 0, "expected": 0}, "cost_coverage": map[string]any{"reported": 0, "expected": 0}}
+	}
+	return map[string]any{"tokens": nil, "cost": nil, "tokens_coverage": map[string]any{"reported": 0, "expected": expected}, "cost_coverage": map[string]any{"reported": 0, "expected": expected}}
 }
 func unknownUsage() map[string]any {
 	return map[string]any{"tokens": nil, "cost": nil, "tokens_coverage": map[string]any{"reported": nil, "expected": nil}, "cost_coverage": map[string]any{"reported": nil, "expected": nil}}
