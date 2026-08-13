@@ -13,6 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26.2"
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: "22.20.0"
@@ -64,6 +68,36 @@ jobs:
 
       - name: Check README links
         run: ./node_modules/.bin/markdown-link-check README.md
+
+  standalone-package:
+    name: Verify standalone skill (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-amd64
+            runner: ubuntu-24.04
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+          - platform: darwin-amd64
+            runner: macos-15-intel
+          - platform: darwin-arm64
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Copy only the installed skill payload
+        run: cp -R skills/skill-eval-loop "$RUNNER_TEMP/skill-eval-loop"
+
+      - name: Run the public launcher without development tools
+        working-directory: ${{ runner.temp }}
+        run: |
+          env -i \
+            HOME="$RUNNER_TEMP" \
+            PATH=/usr/bin:/bin \
+            "$RUNNER_TEMP/skill-eval-loop/scripts/skill-eval-loop" healthcheck \
+              --skill-dir "$RUNNER_TEMP/skill-eval-loop"
 
   tink-package:
     name: Verify checked-out package through Tink
