@@ -1,0 +1,14 @@
+{
+  "name": "run-dry-pi-standard",
+  "command": "run",
+  "args": [
+    "--skill-path", "skill",
+    "--output-dir", "planned-output",
+    "--model", "provider/model-terra",
+    "--trials", "2",
+    "--harness", "pi",
+    "--harness-bin", "./fake-pi",
+    "--dry-run"
+  ],
+  "fixture": "fixtures/recommend-explicit"
+}

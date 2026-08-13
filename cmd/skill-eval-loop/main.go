@@ -13,6 +13,7 @@ import (
 	"github.com/jon-devlapaz/skill-eval-loop/internal/audit"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/evalspec"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/recommend"
+	"github.com/jon-devlapaz/skill-eval-loop/internal/runplan"
 )
 
 func main() {
@@ -225,8 +226,50 @@ func runRun(arguments []string) int {
 		fmt.Print(runHelp)
 		return 0
 	}
-	fmt.Fprintln(os.Stderr, "ERROR: run is not implemented yet")
-	return 1
+	flags := flag.NewFlagSet("run", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	skillPath := flags.String("skill-path", "", "target skill directory")
+	evalsPath := flags.String("evals-path", "", "eval suite JSON path")
+	outputDir := flags.String("output-dir", "", "retained run directory")
+	model := flags.String("model", "", "exact pinned target model")
+	trials := flags.Int("trials", 1, "paired trials per case")
+	harness := flags.String("harness", "", "harness name")
+	harnessBin := flags.String("harness-bin", "", "harness executable")
+	piBin := flags.String("pi-bin", "", "Pi compatibility executable")
+	flags.Int("timeout-seconds", 120, "target timeout")
+	judgeModel := flags.String("judge-model", "", "exact pinned judge model")
+	flags.Int("judge-timeout-seconds", 120, "judge timeout")
+	observer := flags.String("observer", "headless", "headless or herdr")
+	dryRun := flags.Bool("dry-run", false, "validate and print the run plan")
+	if err := flags.Parse(arguments); err != nil {
+		return 2
+	}
+	if *skillPath == "" || *model == "" || *harness == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: --skill-path, --model, and --harness are required")
+		return 2
+	}
+	if !*dryRun {
+		fmt.Fprintln(os.Stderr, "ERROR: run execution is not implemented yet")
+		return 1
+	}
+	plan, err := runplan.Build(runplan.Input{
+		SkillPath: *skillPath, EvalsPath: *evalsPath, OutputDir: *outputDir,
+		Model: *model, Trials: *trials, Harness: *harness, HarnessBin: *harnessBin,
+		PiBin: *piBin, JudgeModel: *judgeModel, Observer: *observer,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		return 1
+	}
+	data, err := runplan.Bytes(plan)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		return 1
+	}
+	if _, err := os.Stdout.Write(data); err != nil {
+		return 1
+	}
+	return 0
 }
 
 func hasHelp(arguments []string) bool {
