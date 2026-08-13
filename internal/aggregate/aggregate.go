@@ -42,8 +42,8 @@ func Run(runDir string) (map[string]any, error) {
 		return nil, fmt.Errorf("manifest.skill_sha256 is not a sha256")
 	}
 	activation := stringDefault(manifest["activation_mode"], "forced")
-	if activation != "forced" {
-		return nil, fmt.Errorf("narrow aggregate slice supports forced activation")
+	if activation != "forced" && activation != "autonomous" {
+		return nil, fmt.Errorf("manifest.activation_mode is invalid")
 	}
 	suitePath, err := artifactPath(root, manifest["suite_path"], "manifest.suite_path")
 	if err != nil {
@@ -257,11 +257,36 @@ func Run(runDir string) (map[string]any, error) {
 		if !treatment.available {
 			mechanismGaps = append(mechanismGaps, label+": treatment_skill_unavailable")
 		}
-		if treatment.activation != "forced_command" {
-			mechanismGaps = append(mechanismGaps, label+": treatment_skill_not_forced")
+		expectedActivation := "forced_command"
+		if activation == "autonomous" {
+			expectedActivation = "available_for_autonomous_selection"
 		}
-		if !treatment.injected && !treatment.accessed {
+		if treatment.activation != expectedActivation {
+			gap := "treatment_skill_not_forced"
+			if activation == "autonomous" {
+				gap = "treatment_activation_mismatch"
+			}
+			mechanismGaps = append(mechanismGaps, label+": "+gap)
+		}
+		if activation == "forced" && !treatment.injected && !treatment.accessed {
 			runtimeGaps = append(runtimeGaps, label+": skill_injection_not_visible_in_trace")
+		}
+		if activation == "autonomous" {
+			loading, _ := recordString(conditions["with_skill"], "expected_skill_loading")
+			if loading == "required" || loading == "forbidden" {
+				routing["decisions_scored"]++
+				correct := (loading == "required" && treatment.accessed) || (loading == "forbidden" && !treatment.accessed)
+				if correct {
+					routing["decisions_correct"]++
+				}
+				if loading == "required" && !treatment.accessed {
+					routing["false_negatives"]++
+					runtimeGaps = append(runtimeGaps, label+": expected_skill_access_not_visible_in_trace")
+				}
+				if loading == "forbidden" && treatment.accessed {
+					routing["false_positives"]++
+				}
+			}
 		}
 	}
 	pairCount := len(trials)
@@ -293,7 +318,32 @@ func Run(runDir string) (map[string]any, error) {
 		allRecords = append(allRecords, counterJudges...)
 		operations["full"] = usageBucket(allRecords, full)
 	}
-	return map[string]any{"schema_version": 2, "skill_name": skillName, "verdict": verdict, "outcome_verdict": outcome, "valid": true, "artifact_valid": true, "mechanism_valid": len(mechanismGaps) == 0, "runtime_attestation_complete": len(runtimeGaps) == 0, "activation_mode": activation, "grader_discrimination": map[string]any{"claim": stringDefault(suite["grader_discrimination"], "none"), "validated": false}, "selection_verdict": "not_measured", "invalid_reasons": []any{}, "mechanism_gaps": stringsAny(sortedUnique(mechanismGaps)), "runtime_attestation_gaps": stringsAny(sortedUnique(runtimeGaps)), "pair_count": pairCount, "task_success": map[string]any{"without_skill": map[string]any{"passed": totals["without_skill"], "rate": round3(controlRate)}, "with_skill": map[string]any{"passed": totals["with_skill"], "rate": round3(treatmentRate)}, "delta": round3(delta), "pair_outcomes": pairOutcomes}, "routing": map[string]any{"expected_injections": routing["expected_injections"], "available": routing["available"], "injection_attested": routing["injection_attested"], "explicit_accesses": routing["explicit_accesses"], "control_exposures": routing["control_exposures"], "decisions_scored": 0, "decisions_correct": 0, "false_positives": 0, "false_negatives": 0, "accuracy": nil}, "operations": operations, "limits": []any{"This is a local paired diagnostic, not a distribution or significance claim.", "The suite did not declare grader_discrimination=case_contrast; optional counters do not prove every response-sensitive grader distinguishes a known good/bad pair.", harness + " skill exposure is configured by the selected adapter; runtime attestation and tool-profile precision vary by harness.", "Condition order is counterbalanced by trial; temporal drift remains possible."}}, nil
+	accuracy := any(nil)
+	selection := "not_measured"
+	if routing["decisions_scored"] > 0 {
+		value := round3(float64(routing["decisions_correct"]) / float64(routing["decisions_scored"]))
+		accuracy = value
+		selection = "failed"
+		if value == 1 {
+			selection = "passed"
+		}
+	}
+	claim := stringDefault(suite["grader_discrimination"], "none")
+	limits := []any{"This is a local paired diagnostic, not a distribution or significance claim."}
+	if claim == "none" {
+		limits = append(limits, "The suite did not declare grader_discrimination=case_contrast; optional counters do not prove every response-sensitive grader distinguishes a known good/bad pair.")
+	}
+	limits = append(limits, harness+" skill exposure is configured by the selected adapter; runtime attestation and tool-profile precision vary by harness.", "Condition order is counterbalanced by trial; temporal drift remains possible.")
+	return map[string]any{"schema_version": 2, "skill_name": skillName, "verdict": verdict, "outcome_verdict": outcome, "valid": true, "artifact_valid": true, "mechanism_valid": len(mechanismGaps) == 0, "runtime_attestation_complete": len(runtimeGaps) == 0, "activation_mode": activation, "grader_discrimination": map[string]any{"claim": claim, "validated": claim == "case_contrast"}, "selection_verdict": selection, "invalid_reasons": []any{}, "mechanism_gaps": stringsAny(sortedUnique(mechanismGaps)), "runtime_attestation_gaps": stringsAny(sortedUnique(runtimeGaps)), "pair_count": pairCount, "task_success": map[string]any{"without_skill": map[string]any{"passed": totals["without_skill"], "rate": round3(controlRate)}, "with_skill": map[string]any{"passed": totals["with_skill"], "rate": round3(treatmentRate)}, "delta": round3(delta), "pair_outcomes": pairOutcomes}, "routing": map[string]any{"expected_injections": routing["expected_injections"], "available": routing["available"], "injection_attested": routing["injection_attested"], "explicit_accesses": routing["explicit_accesses"], "control_exposures": routing["control_exposures"], "decisions_scored": routing["decisions_scored"], "decisions_correct": routing["decisions_correct"], "false_positives": routing["false_positives"], "false_negatives": routing["false_negatives"], "accuracy": accuracy}, "operations": operations, "limits": limits}, nil
+}
+
+func recordString(value any, key string) (string, bool) {
+	record, ok := value.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	text, ok := record[key].(string)
+	return text, ok
 }
 
 type conditionResult struct {

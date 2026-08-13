@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "suite_sha256": "9010b790d6586cedf2273aed8b7527740e3b19701a98becd2c62eff6f78c62b5",
+  "cases": [
+    {
+      "case_id": "auto-use",
+      "origin": "author_derived",
+      "source_id": "fixture-auto-use",
+      "source_type": "author_scenario",
+      "observed_at": "2026-08-13",
+      "task_author": "conformance",
+      "artifact": "provenance/use.json",
+      "artifact_sha256": "3b7d21f7ce8eafd02b93f85118526d04f21a099aa8396bb9d193ad2fe0b7a6e4",
+      "case_sha256": "141eaf2f4909e5985f7080f4ccf4f205569b909032c265ea078d47cb8ff63d75"
+    },
+    {
+      "case_id": "auto-skip",
+      "origin": "author_derived",
+      "source_id": "fixture-auto-skip",
+      "source_type": "author_scenario",
+      "observed_at": "2026-08-13",
+      "task_author": "conformance",
+      "artifact": "provenance/skip.json",
+      "artifact_sha256": "b46808257a8c63979b6d41c9d67416f18348397c45332f46faae60638ed4a932",
+      "case_sha256": "4d5bcb977cfa5c823933ab47cae81323d3d435cb7d19a215c394729684ddb66e"
+    }
+  ]
+}

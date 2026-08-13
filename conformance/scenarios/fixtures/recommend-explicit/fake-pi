@@ -24,6 +24,7 @@ if [ "${1:-}" = "--list-models" ]; then
   exit 0
 fi
 with_skill=false
+skill_name=skill
 is_judge=false
 model=''
 previous=''
@@ -32,6 +33,7 @@ for argument in "$@"; do
   if [ "$argument" = "--skill" ]; then
     with_skill=true
   fi
+  if [ "$previous" = "--skill" ]; then skill_name=$(basename "$argument"); fi
   if [ "$previous" = "--model" ]; then
     model=$argument
   fi
@@ -45,7 +47,7 @@ if [ "${1:-}" = "--print" ]; then
 	session=session-control
 	response=no
 	skills='[]'
-	if [ "$is_judge" = true ]; then
+  if [ "$is_judge" = true ]; then
 	  session=session-judge-$order
 	  marker='CANDIDATE:
 ok'
@@ -57,7 +59,8 @@ ok'
 	elif [ "$with_skill" = true ]; then
 	  session=session-treatment
 	  response=ok
-	  skills='["skill"]'
+	  skills="[\"$skill_name\"]"
+	  case "$argument" in *AUTO_SKIP*) response=no ;; esac
   fi
 	status=0
 	timed_out=false
@@ -71,6 +74,9 @@ ok'
   done
 	printf '],"cwd":"%s","order":%s,"status":%s,"timed_out":%s}\n' "$PWD" "$order" "$status" "$timed_out" >> "$SKILL_EVAL_CONFORMANCE_LOG"
 	printf '{"type":"system","subtype":"init","model":"%s","session_id":"%s","skills":%s}\n' "$model" "$session" "$skills"
+	if [ "$with_skill" = true ]; then
+	  case "$argument" in *AUTO_USE*) printf '{"toolName":"skill","path":"/fixture/%s/SKILL.md"}\n' "$skill_name" ;; esac
+	fi
 	if [ "$timed_out" = true ]; then
 	  sleep 30
 	fi

@@ -1,0 +1,13 @@
+{
+  "name": "run-pi-autonomous-routing",
+  "command": "run",
+  "args": [
+    "--skill-path", "skill-auto",
+    "--output-dir", "run-output",
+    "--model", "provider/model-terra",
+    "--trials", "1",
+    "--harness", "pi",
+    "--harness-bin", "$WORKSPACE/fake-pi"
+  ],
+  "fixture": "fixtures/recommend-explicit"
+}

@@ -65,6 +65,10 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 	if err != nil {
 		return fail(err)
 	}
+	provenancePath, provenanceHash, err := retainProvenance(input.Plan.OutputDir, suite)
+	if err != nil {
+		return fail(err)
+	}
 	snapshot, err := buildSuiteSnapshot(suite)
 	if err != nil {
 		return fail(err)
@@ -110,12 +114,18 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 			pairs = append(pairs, pair)
 		}
 	}
+	decision := "Does forced loading of the target skill improve task success?"
+	conditionVariable := input.Plan.Harness + " explicit skill activation versus isolated control"
+	if suite.ActivationMode == "autonomous" {
+		decision = "Does autonomous access to the target skill improve task success?"
+		conditionVariable = input.Plan.Harness + " native skill availability versus isolated control"
+	}
 	manifest := manifest{
 		SchemaVersion: 1, TargetSkillName: suite.SkillName,
-		Decision:          "Does forced loading of the target skill improve task success?",
-		ConditionVariable: input.Plan.Harness + " explicit skill activation versus isolated control",
+		Decision:          decision,
+		ConditionVariable: conditionVariable,
 		SkillSHA256:       skillHash, SuitePath: "suite_snapshot.json", SuiteSHA256: suiteHash,
-		ProvenancePath: nil, ProvenanceSHA256: nil, RequestedModel: input.Plan.Model,
+		ProvenancePath: provenancePath, ProvenanceSHA256: provenanceHash, RequestedModel: input.Plan.Model,
 		JudgeModel: optionalString(input.JudgeModel), Harness: input.Plan.Harness, HarnessVersion: input.Plan.HarnessVersion,
 		Observer: "headless", ToolProfile: suite.ToolProfile, ActivationMode: suite.ActivationMode,
 		ExecutionOrder: "counterbalanced_by_trial", ExecutionSchedule: schedule,
@@ -173,6 +183,9 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 		}
 		available = append(available, suite.SkillName)
 		activation = "forced_command"
+		if suite.ActivationMode == "autonomous" {
+			activation = "available_for_autonomous_selection"
+		}
 	}
 	outputs := filepath.Join(conditionDir, "outputs")
 	if err := os.MkdirAll(outputs, 0o755); err != nil {
@@ -872,6 +885,77 @@ func buildSuiteSnapshot(suite *evalspec.Suite) (suiteSnapshot, error) {
 	return result, nil
 }
 
+func retainProvenance(outputDir string, suite *evalspec.Suite) (any, any, error) {
+	if len(suite.ProvenanceRecords) == 0 {
+		return nil, nil, nil
+	}
+	caseIDs := make([]string, 0, len(suite.ProvenanceRecords))
+	for caseID := range suite.ProvenanceRecords {
+		caseIDs = append(caseIDs, caseID)
+	}
+	sort.Strings(caseIDs)
+	snapshot := provenanceSnapshot{SchemaVersion: 1, SourceManifestSHA256: suite.ProvenanceSHA256}
+	for _, caseID := range caseIDs {
+		record := suite.ProvenanceRecords[caseID]
+		source, err := evalspec.SafeRelativePath(suite.SuiteRoot, record["artifact"], "provenance."+caseID+".artifact")
+		if err != nil {
+			return nil, nil, err
+		}
+		extension := filepath.Ext(source)
+		if extension == "" {
+			extension = ".json"
+		}
+		destination := filepath.Join(outputDir, "provenance", caseID+extension)
+		if err := copyFile(source, destination); err != nil {
+			return nil, nil, err
+		}
+		hash, err := fileHash(destination)
+		if err != nil {
+			return nil, nil, err
+		}
+		snapshot.Cases = append(snapshot.Cases, retainedProvenanceRecord{
+			CaseID: caseID, Origin: record["origin"].(string), SourceID: record["source_id"].(string),
+			SourceType: record["source_type"].(string), ObservedAt: record["observed_at"].(string), TaskAuthor: record["task_author"].(string),
+			Artifact: record["artifact"].(string), ArtifactSHA256: record["artifact_sha256"].(string), CaseSHA256: record["case_sha256"].(string),
+			RetainedArtifactPath: filepath.ToSlash(filepath.Join("provenance", caseID+extension)), RetainedArtifactSHA256: hash,
+		})
+	}
+	path := filepath.Join(outputDir, "provenance_snapshot.json")
+	if err := writeJSON(path, snapshot); err != nil {
+		return nil, nil, err
+	}
+	hash, err := fileHash(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	return "provenance_snapshot.json", hash, nil
+}
+
+func copyFile(source, destination string) error {
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	info, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
 func writeState(root string, value state) error {
 	return writeJSON(filepath.Join(root, "run_state.json"), value)
 }
@@ -1090,6 +1174,24 @@ type suiteSnapshot struct {
 	GraderDiscrimination string         `json:"grader_discrimination"`
 	SourceSHA256         string         `json:"source_sha256"`
 	Cases                []snapshotCase `json:"cases"`
+}
+type provenanceSnapshot struct {
+	SchemaVersion        int                        `json:"schema_version"`
+	SourceManifestSHA256 string                     `json:"source_manifest_sha256"`
+	Cases                []retainedProvenanceRecord `json:"cases"`
+}
+type retainedProvenanceRecord struct {
+	CaseID                 string `json:"case_id"`
+	Origin                 string `json:"origin"`
+	SourceID               string `json:"source_id"`
+	SourceType             string `json:"source_type"`
+	ObservedAt             string `json:"observed_at"`
+	TaskAuthor             string `json:"task_author"`
+	Artifact               string `json:"artifact"`
+	ArtifactSHA256         string `json:"artifact_sha256"`
+	CaseSHA256             string `json:"case_sha256"`
+	RetainedArtifactPath   string `json:"retained_artifact_path"`
+	RetainedArtifactSHA256 string `json:"retained_artifact_sha256"`
 }
 type referenceRecord struct {
 	CaseID           string                  `json:"case_id"`
