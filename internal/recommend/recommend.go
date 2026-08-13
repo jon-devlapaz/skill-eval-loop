@@ -1,11 +1,14 @@
 package recommend
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Model struct {
@@ -47,12 +50,43 @@ func InferTier(modelID, description string) string {
 	return "balanced"
 }
 func ParseExplicit(value string) []Model {
-	unique := map[string]Model{}
+	models := []Model{}
 	for _, item := range strings.Split(value, ",") {
 		id := strings.TrimSpace(item)
 		if id != "" {
-			unique[id] = Model{ID: id, Tier: InferTier(id, ""), Source: "user-supplied inventory"}
+			models = append(models, Model{ID: id, Tier: InferTier(id, ""), Source: "user-supplied inventory"})
 		}
+	}
+	return uniqueSorted(models)
+}
+
+func ParsePiModels(output string) []Model {
+	models := []Model{}
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || (fields[0] == "provider" && fields[1] == "model") {
+			continue
+		}
+		id := fields[0] + "/" + fields[1]
+		models = append(models, Model{ID: id, Tier: InferTier(id, ""), Source: "pi --list-models"})
+	}
+	return models
+}
+
+func DiscoverPi(executable string) ([]Model, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	output, err := exec.CommandContext(ctx, executable, "--list-models").Output()
+	if err != nil {
+		return nil, err
+	}
+	return uniqueSorted(ParsePiModels(string(output))), nil
+}
+
+func uniqueSorted(models []Model) []Model {
+	unique := map[string]Model{}
+	for _, model := range models {
+		unique[model.ID] = model
 	}
 	result := make([]Model, 0, len(unique))
 	for _, model := range unique {

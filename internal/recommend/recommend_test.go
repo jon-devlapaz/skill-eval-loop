@@ -45,3 +45,24 @@ func TestInferTierUsesLeafTokensNotProviderOrSubstrings(t *testing.T) {
 		t.Fatalf("tier=%s", got)
 	}
 }
+
+func TestParsePiModelsUsesExactProviderModelIDs(t *testing.T) {
+	models := ParsePiModels(`provider model context max-out thinking images
+openai-codex gpt-5.6-luna 272K 128K yes yes
+openai-codex gpt-5.6-terra 272K 128K yes yes
+openai-codex gpt-5.6-sol 272K 128K yes yes
+`)
+	want := []string{
+		"openai-codex/gpt-5.6-luna",
+		"openai-codex/gpt-5.6-terra",
+		"openai-codex/gpt-5.6-sol",
+	}
+	if len(models) != len(want) {
+		t.Fatalf("models=%#v", models)
+	}
+	for index := range want {
+		if models[index].ID != want[index] || models[index].Source != "pi --list-models" {
+			t.Fatalf("models[%d]=%#v", index, models[index])
+		}
+	}
+}

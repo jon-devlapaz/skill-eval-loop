@@ -54,10 +54,6 @@ func runRecommend(arguments []string) int {
 		fmt.Fprintln(os.Stderr, "ERROR: --skill-path, --harness, and --task-profile are required")
 		return 2
 	}
-	if *modelsValue == "" {
-		writeRecommendError("native model discovery is not implemented yet; pass --models with exact comma-separated ids")
-		return 1
-	}
 	executable := *harnessBin
 	if executable == "" {
 		executable = map[string]string{"pi": "pi", "codex": "codex", "hermes": "hermes", "claude-code": "claude"}[*harness]
@@ -95,7 +91,19 @@ func runRecommend(arguments []string) int {
 		}
 		counters[index] = current.HasCounterReference
 	}
-	report, err := recommend.Build(recommend.Input{Harness: *harness, Models: recommend.ParseExplicit(*modelsValue), TaskProfile: *profile, CaseCount: len(suite.Cases), ModelRubricCounts: counts, CounterReferences: counters, Trials: 1})
+	models := recommend.ParseExplicit(*modelsValue)
+	if *modelsValue == "" {
+		if *harness != "pi" {
+			writeRecommendError("native model discovery is not implemented yet for this harness; pass --models with exact comma-separated ids")
+			return 1
+		}
+		models, err = recommend.DiscoverPi(resolved)
+		if err != nil {
+			writeRecommendError(err.Error())
+			return 1
+		}
+	}
+	report, err := recommend.Build(recommend.Input{Harness: *harness, Models: models, TaskProfile: *profile, CaseCount: len(suite.Cases), ModelRubricCounts: counts, CounterReferences: counters, Trials: 1})
 	if err != nil {
 		writeRecommendError(err.Error())
 		return 1

@@ -1,0 +1,11 @@
+{
+  "name": "recommend-pi-native-standard",
+  "command": "recommend-models",
+  "args": [
+    "--skill-path", "skill",
+    "--harness", "pi",
+    "--harness-bin", "./fake-pi",
+    "--task-profile", "standard"
+  ],
+  "fixture": "fixtures/recommend-explicit"
+}

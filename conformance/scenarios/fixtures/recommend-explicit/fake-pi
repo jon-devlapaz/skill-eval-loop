@@ -1,7 +1,18 @@
 #!/bin/sh
 set -eu
 if [ "${1:-}" = "--version" ]; then
+  printf '{"executable":"fake-pi","argv":["fake-pi","--version"],"cwd":"%s","order":1,"status":0,"timed_out":false}\n' "$PWD" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   printf 'fake-pi 1.0\n'
+  exit 0
+fi
+if [ "${1:-}" = "--list-models" ]; then
+  printf '{"executable":"fake-pi","argv":["fake-pi","--list-models"],"cwd":"%s","order":2,"status":0,"timed_out":false}\n' "$PWD" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  printf '%s\n' \
+    'provider model context max-out thinking images' \
+    'openai-codex gpt-5.6-sol 272K 128K yes yes' \
+    'openai-codex gpt-5.6-luna 272K 128K yes yes' \
+    'openai-codex gpt-5.6-terra 272K 128K yes yes' \
+    'openai-codex gpt-5.6-sol 272K 128K yes yes'
   exit 0
 fi
 printf 'unexpected invocation\n' >&2
