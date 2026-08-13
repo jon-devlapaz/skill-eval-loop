@@ -49,11 +49,19 @@ their hashes. Comparison uses a copy with one explicit transformation:
 1. The distinct top-level executable paths are bound to the common semantic
    role `$IMPLEMENTATION`. This is a role binding, not a claim that the paths
    are nondeterministic.
-There are currently no nondeterministic-field normalizations. No stdout/stderr
-content, errors, artifact structure or bytes, hashes, routing
-claims, grades, model identity, safety result, exit status, signal, or
-subprocess accounting is normalized. Additional normalizations require a
-fixture proving the field nondeterministic and an update to this document.
+Paired-run scenarios normalize only each retained manifest condition's
+`started_at` timestamp and `duration_seconds`, which direct oracle replays prove
+vary per execution. The comparison copy reserializes that manifest and updates
+only its filesystem snapshot size/hash to match the normalized bytes. Raw
+evidence remains in the report. No stdout/stderr content, errors, artifact
+structure, embedded artifact hashes, routing claims, grades, model identity,
+safety result, exit status, signal, or subprocess accounting is normalized.
+Additional normalizations require a fixture proving the field nondeterministic
+and an update to this document.
+
+Scenario arguments and selected environment values may use `$WORKSPACE` to
+address an absolute path inside the copied fixture. Both implementations receive
+the same expanded path; this is fixture setup, not output normalization.
 
 The harness itself owns a POSIX process group for each implementation. On
 timeout it sends SIGTERM to the group, waits one second, then sends SIGKILL.

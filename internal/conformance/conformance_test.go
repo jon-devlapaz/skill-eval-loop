@@ -64,6 +64,16 @@ func TestCompareRejectsSameExecutable(t *testing.T) {
 	}
 }
 
+func TestExpandWorkspaceInArgumentsAndEnvironment(t *testing.T) {
+	scenario := expandWorkspace(Scenario{
+		Args:        []string{"$WORKSPACE/fake"},
+		Environment: map[string]string{"FIXTURE": "$WORKSPACE/data"},
+	}, "/tmp/workspace")
+	if scenario.Args[0] != "/tmp/workspace/fake" || scenario.Environment["FIXTURE"] != "/tmp/workspace/data" {
+		t.Fatalf("scenario=%#v", scenario)
+	}
+}
+
 func TestCompareFailsWhenImplementationIsAbsent(t *testing.T) {
 	requireUnix(t)
 	directory := t.TempDir()

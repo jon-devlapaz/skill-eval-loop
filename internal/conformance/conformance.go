@@ -182,7 +182,7 @@ func Compare(ctx context.Context, options Options) (Report, error) {
 		Scenario:       scenario.Name,
 		Equivalent:     bytes.Equal(oracleJSON, candidateJSON),
 		RoleBindings:   []string{"top-level executable path -> $IMPLEMENTATION"},
-		Normalizations: []string{},
+		Normalizations: manifestNormalizations(oracleSnapshot, candidateSnapshot),
 		Oracle:         oracleSnapshot,
 		Candidate:      candidateSnapshot,
 	}
@@ -249,6 +249,7 @@ func runAtRoot(ctx context.Context, implementation string, scenario Scenario, sc
 			return Snapshot{}, fmt.Errorf("copy fixture: %w", err)
 		}
 	}
+	scenario = expandWorkspace(scenario, workspace)
 	stdin, _ := base64.StdEncoding.DecodeString(scenario.StdinBase64)
 	argv := append([]string{implementation, scenario.Command}, scenario.Args...)
 	commandCtx := ctx
@@ -300,6 +301,19 @@ func runAtRoot(ctx context.Context, implementation string, scenario Scenario, sc
 		Filesystem:        tree,
 		Subprocesses:      subprocesses,
 	}, nil
+}
+
+func expandWorkspace(scenario Scenario, workspace string) Scenario {
+	replace := func(value string) string {
+		return strings.ReplaceAll(value, "$WORKSPACE", workspace)
+	}
+	for index := range scenario.Args {
+		scenario.Args[index] = replace(scenario.Args[index])
+	}
+	for key, value := range scenario.Environment {
+		scenario.Environment[key] = replace(value)
+	}
+	return scenario
 }
 
 func waitProcessGroup(ctx context.Context, cmd *exec.Cmd) (error, bool) {
@@ -479,8 +493,64 @@ func normalize(raw Snapshot, implementation string) (Snapshot, error) {
 	}
 	for index := range snapshot.Filesystem {
 		snapshot.Filesystem[index].SymlinkTarget = replace(snapshot.Filesystem[index].SymlinkTarget)
+		if strings.HasSuffix(filepath.ToSlash(snapshot.Filesystem[index].Path), "/run_manifest.json") {
+			if err := normalizeRunManifest(&snapshot.Filesystem[index]); err != nil {
+				return Snapshot{}, err
+			}
+		}
 	}
 	return snapshot, nil
+}
+
+func normalizeRunManifest(entry *TreeEntry) error {
+	data, err := base64.StdEncoding.DecodeString(entry.BytesBase64)
+	if err != nil {
+		return err
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return err
+	}
+	trials, _ := manifest["trials"].([]any)
+	for _, rawPair := range trials {
+		pair, _ := rawPair.(map[string]any)
+		conditions, _ := pair["conditions"].(map[string]any)
+		for _, rawCondition := range conditions {
+			condition, _ := rawCondition.(map[string]any)
+			condition["started_at"] = "$STARTED_AT"
+			condition["duration_seconds"] = "$DURATION_SECONDS"
+		}
+	}
+	normalized, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return err
+	}
+	normalized = append(normalized, '\n')
+	sum := sha256.Sum256(normalized)
+	entry.BytesBase64 = base64.StdEncoding.EncodeToString(normalized)
+	entry.Size = int64(len(normalized))
+	entry.SHA256 = hex.EncodeToString(sum[:])
+	return nil
+}
+
+func manifestNormalizations(oracle, candidate Snapshot) []string {
+	if hasTreeSuffix(oracle.Filesystem, "/run_manifest.json") && hasTreeSuffix(candidate.Filesystem, "/run_manifest.json") {
+		return []string{
+			"run_manifest condition started_at -> $STARTED_AT",
+			"run_manifest condition duration_seconds -> $DURATION_SECONDS",
+			"run_manifest snapshot size/hash -> normalized manifest bytes",
+		}
+	}
+	return []string{}
+}
+
+func hasTreeSuffix(entries []TreeEntry, suffix string) bool {
+	for _, entry := range entries {
+		if strings.HasSuffix(filepath.ToSlash(entry.Path), suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func below(root, relative string) (string, error) {
