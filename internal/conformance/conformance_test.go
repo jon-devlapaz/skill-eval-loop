@@ -37,6 +37,13 @@ func TestCompareCapturesEquivalentRawEvidence(t *testing.T) {
 	if report.Oracle.Invocation.Executable == report.Candidate.Invocation.Executable {
 		t.Fatal("raw evidence must retain distinct implementation paths")
 	}
+	if report.Oracle.Invocation.Argv[0] != report.Oracle.Invocation.Executable ||
+		strings.Contains(report.Oracle.Invocation.SelectedEnvironment[subprocessLogEnv], "$RUN_ROOT") {
+		t.Fatalf("raw evidence was normalized: %#v", report.Oracle.Invocation)
+	}
+	if report.Oracle.Invocation.CWD != report.Candidate.Invocation.CWD {
+		t.Fatalf("implementations did not replay at one cwd: %q != %q", report.Oracle.Invocation.CWD, report.Candidate.Invocation.CWD)
+	}
 	if got := string(decode(t, report.Oracle.StdoutBase64)); got != "hello\n" {
 		t.Fatalf("stdout = %q", got)
 	}

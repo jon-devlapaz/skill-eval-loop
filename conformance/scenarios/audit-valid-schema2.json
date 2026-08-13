@@ -1,0 +1,6 @@
+{
+  "name": "audit-valid-schema2",
+  "command": "audit",
+  "args": ["--skill-path", "skill"],
+  "fixture": "fixtures/audit-schema2"
+}

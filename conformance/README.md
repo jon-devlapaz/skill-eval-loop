@@ -41,16 +41,16 @@ write this instrumentation log.
 
 ## Comparison rules
 
-Raw snapshots are never rewritten. Comparison uses copies with two explicit
-transformations:
+Raw snapshots are never rewritten. Oracle and candidate replay sequentially at
+the exact same temporary path, with the workspace reset to the original fixture
+between runs. This prevents temporary paths from changing stdout, artifacts, or
+their hashes. Comparison uses a copy with one explicit transformation:
 
 1. The distinct top-level executable paths are bound to the common semantic
    role `$IMPLEMENTATION`. This is a role binding, not a claim that the paths
    are nondeterministic.
-2. The independently allocated temporary root is replaced with `$RUN_ROOT`.
-   This is the only initial nondeterministic-field normalization.
-
-No stdout/stderr content, errors, artifact structure or bytes, hashes, routing
+There are currently no nondeterministic-field normalizations. No stdout/stderr
+content, errors, artifact structure or bytes, hashes, routing
 claims, grades, model identity, safety result, exit status, signal, or
 subprocess accounting is normalized. Additional normalizations require a
 fixture proving the field nondeterministic and an update to this document.

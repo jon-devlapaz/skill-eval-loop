@@ -1,0 +1,6 @@
+{
+  "name": "audit-duplicate-unknown-numeric",
+  "command": "audit",
+  "args": ["--skill-path", "skill"],
+  "fixture": "fixtures/audit-compat-json"
+}

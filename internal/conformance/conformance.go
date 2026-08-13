@@ -142,16 +142,33 @@ func Compare(ctx context.Context, options Options) (Report, error) {
 	if err != nil {
 		return Report{}, err
 	}
-	oracleSnapshot, err := run(ctx, oracle, scenario, filepath.Dir(options.ScenarioPath))
+	runRoot, err := os.MkdirTemp("", "skill-eval-conformance-")
+	if err != nil {
+		return Report{}, err
+	}
+	defer os.RemoveAll(runRoot)
+	oracleSnapshot, err := runAtRoot(ctx, oracle, scenario, filepath.Dir(options.ScenarioPath), runRoot)
 	if err != nil {
 		return Report{}, fmt.Errorf("run oracle: %w", err)
 	}
-	candidateSnapshot, err := run(ctx, candidate, scenario, filepath.Dir(options.ScenarioPath))
+	if err := os.RemoveAll(runRoot); err != nil {
+		return Report{}, err
+	}
+	if err := os.Mkdir(runRoot, 0o700); err != nil {
+		return Report{}, err
+	}
+	candidateSnapshot, err := runAtRoot(ctx, candidate, scenario, filepath.Dir(options.ScenarioPath), runRoot)
 	if err != nil {
 		return Report{}, fmt.Errorf("run candidate: %w", err)
 	}
-	normalizedOracle := normalize(oracleSnapshot, oracle)
-	normalizedCandidate := normalize(candidateSnapshot, candidate)
+	normalizedOracle, err := normalize(oracleSnapshot, oracle)
+	if err != nil {
+		return Report{}, err
+	}
+	normalizedCandidate, err := normalize(candidateSnapshot, candidate)
+	if err != nil {
+		return Report{}, err
+	}
 	oracleJSON, err := canonicalJSON(normalizedOracle)
 	if err != nil {
 		return Report{}, err
@@ -165,7 +182,7 @@ func Compare(ctx context.Context, options Options) (Report, error) {
 		Scenario:       scenario.Name,
 		Equivalent:     bytes.Equal(oracleJSON, candidateJSON),
 		RoleBindings:   []string{"top-level executable path -> $IMPLEMENTATION"},
-		Normalizations: []string{"per-run temporary root -> $RUN_ROOT"},
+		Normalizations: []string{},
 		Oracle:         oracleSnapshot,
 		Candidate:      candidateSnapshot,
 	}
@@ -215,6 +232,10 @@ func run(ctx context.Context, implementation string, scenario Scenario, scenario
 		return Snapshot{}, err
 	}
 	defer os.RemoveAll(root)
+	return runAtRoot(ctx, implementation, scenario, scenarioDir, root)
+}
+
+func runAtRoot(ctx context.Context, implementation string, scenario Scenario, scenarioDir, root string) (Snapshot, error) {
 	workspace := filepath.Join(root, "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		return Snapshot{}, err
@@ -247,8 +268,7 @@ func run(ctx context.Context, implementation string, scenario Scenario, scenario
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err = cmd.Start()
-	if err != nil {
+	if err := cmd.Start(); err != nil {
 		return Snapshot{}, err
 	}
 	waitErr, timedOut := waitProcessGroup(commandCtx, cmd)
@@ -426,11 +446,17 @@ func readProcessRecords(path string) ([]ProcessRecord, error) {
 	return records, nil
 }
 
-func normalize(snapshot Snapshot, implementation string) Snapshot {
-	root := filepath.Dir(snapshot.Invocation.CWD)
+func normalize(raw Snapshot, implementation string) (Snapshot, error) {
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	var snapshot Snapshot
+	if err := json.Unmarshal(encoded, &snapshot); err != nil {
+		return Snapshot{}, err
+	}
 	replace := func(value string) string {
 		value = strings.ReplaceAll(value, implementation, "$IMPLEMENTATION")
-		value = strings.ReplaceAll(value, root, "$RUN_ROOT")
 		return value
 	}
 	snapshot.Invocation.Executable = replace(snapshot.Invocation.Executable)
@@ -454,7 +480,7 @@ func normalize(snapshot Snapshot, implementation string) Snapshot {
 	for index := range snapshot.Filesystem {
 		snapshot.Filesystem[index].SymlinkTarget = replace(snapshot.Filesystem[index].SymlinkTarget)
 	}
-	return snapshot
+	return snapshot, nil
 }
 
 func below(root, relative string) (string, error) {

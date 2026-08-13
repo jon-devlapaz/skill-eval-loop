@@ -1,0 +1,6 @@
+{
+  "name": "audit-invalid-schema",
+  "command": "audit",
+  "args": ["--skill-path", "skill"],
+  "fixture": "fixtures/audit-invalid-schema"
+}
