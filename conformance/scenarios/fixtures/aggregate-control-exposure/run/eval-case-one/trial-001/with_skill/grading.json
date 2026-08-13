@@ -1,0 +1,20 @@
+{
+  "grader": {
+    "kind": "deterministic_mixed",
+    "schema_version": 2
+  },
+  "expectations": [
+    {
+      "text": "contains",
+      "passed": true,
+      "evidence": "'ok' found in response",
+      "grader": "response_contains"
+    }
+  ],
+  "summary": {
+    "passed": 1,
+    "failed": 0,
+    "total": 1,
+    "pass_rate": 1.0
+  }
+}

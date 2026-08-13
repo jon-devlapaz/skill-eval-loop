@@ -1,0 +1,1 @@
+{"name":"aggregate-unforced-treatment","command":"aggregate","args":["--run-dir","run"],"fixture":"fixtures/aggregate-unforced-treatment"}
