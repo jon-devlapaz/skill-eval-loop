@@ -39,13 +39,67 @@ func main() {
 	case "help", "-h", "--help":
 		usage()
 	case "healthcheck":
-		fmt.Fprintf(os.Stderr, "ERROR: %s is not implemented yet\n", os.Args[1])
-		os.Exit(1)
+		os.Exit(runHealthcheck(os.Args[2:]))
 	default:
 		fmt.Fprintf(os.Stderr, "ERROR: unknown command: %s\n", os.Args[1])
 		usage()
 		os.Exit(2)
 	}
+}
+
+func runHealthcheck(arguments []string) int {
+	if hasHelp(arguments) {
+		fmt.Print(healthcheckHelp)
+		return 0
+	}
+	flags := flag.NewFlagSet("healthcheck", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	skillDir := flags.String("skill-dir", "", "installed skill directory")
+	if err := flags.Parse(arguments); err != nil {
+		return 2
+	}
+	if flags.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "ERROR: unexpected positional arguments")
+		return 2
+	}
+	root := *skillDir
+	if root == "" {
+		executable, err := os.Executable()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return 1
+		}
+		root = filepath.Clean(filepath.Join(filepath.Dir(executable), "..", ".."))
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+		return 1
+	}
+	required := []string{"SKILL.md", "references/eval-suite-schema.md", "references/harness-support.md"}
+	errorsFound := []string{}
+	for _, relative := range required {
+		info, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(relative)))
+		if statErr != nil || !info.Mode().IsRegular() {
+			errorsFound = append(errorsFound, relative+" is missing")
+		}
+	}
+	report := struct {
+		Valid    bool     `json:"valid"`
+		SkillDir string   `json:"skill_dir"`
+		Commands []string `json:"commands"`
+		Errors   []string `json:"errors"`
+	}{Valid: len(errorsFound) == 0, SkillDir: root, Commands: []string{"audit", "recommend-models", "run", "aggregate", "healthcheck"}, Errors: errorsFound}
+	data, marshalErr := json.MarshalIndent(report, "", "  ")
+	if marshalErr != nil {
+		fmt.Fprintf(os.Stderr, "ERROR: %v\n", marshalErr)
+		return 1
+	}
+	_, _ = os.Stdout.Write(append(data, '\n'))
+	if !report.Valid {
+		return 1
+	}
+	return 0
 }
 
 func runRecommend(arguments []string) int {
@@ -376,6 +430,15 @@ options:
                         workspace.
   --dry-run             Validate and print the run plan without creating files
                         or calling a model.
+`
+
+const healthcheckHelp = `usage: skill-eval-loop healthcheck [-h] [--skill-dir SKILL_DIR]
+
+Validate an installed Go evaluator package without provider calls.
+
+options:
+  -h, --help            show this help message and exit
+  --skill-dir SKILL_DIR installed skill directory; inferred from packaged binary
 `
 
 func usage() {
