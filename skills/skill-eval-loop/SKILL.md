@@ -115,7 +115,7 @@ an existing suite is left unchanged and work continues.
 ### 3. Audit the suite without calling a model
 
 ```bash
-python3 "$SKILL_EVAL_DIR/scripts/audit_suite.py" \
+"$SKILL_EVAL_DIR/scripts/skill-eval-loop" audit \
   --skill-path /absolute/path/to/skill
 ```
 
@@ -130,7 +130,7 @@ across model tiers. Classify the task as `simple`, `standard`, `complex`, or
 prompts, graders, fixtures, and references sealed from the main context.
 
 ```bash
-python3 "$SKILL_EVAL_DIR/scripts/recommend_models.py" \
+"$SKILL_EVAL_DIR/scripts/skill-eval-loop" recommend-models \
   --skill-path /absolute/path/to/skill \
   --harness selected-harness \
   --task-profile standard
@@ -184,7 +184,7 @@ chosen, and verify its environment before live trials. Workspace path layout liv
 [the workspace layout reference](references/workspace-layout.md).
 
 ```bash
-python3 "$SKILL_EVAL_DIR/scripts/run_skill_eval.py" \
+"$SKILL_EVAL_DIR/scripts/skill-eval-loop" run \
   --skill-path /absolute/path/to/skill \
   --harness selected-harness \
   --model exact-provider/model-id \
@@ -219,7 +219,7 @@ provider-call uncertainty.
 ### 6. Run the paired pilot
 
 ```bash
-python3 "$SKILL_EVAL_DIR/scripts/run_skill_eval.py" \
+"$SKILL_EVAL_DIR/scripts/skill-eval-loop" run \
   --skill-path /absolute/path/to/skill \
   --harness selected-harness \
   --model exact-provider/model-id \
@@ -266,7 +266,7 @@ Load [interpret-benchmark.md](references/interpret-benchmark.md) and report from
 To revalidate a copied or reviewed run:
 
 ```bash
-python3 "$SKILL_EVAL_DIR/scripts/aggregate_benchmark.py" \
+"$SKILL_EVAL_DIR/scripts/skill-eval-loop" aggregate \
   --run-dir /absolute/path/to/run
 ```
 

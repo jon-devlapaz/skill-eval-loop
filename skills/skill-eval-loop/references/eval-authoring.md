@@ -25,7 +25,7 @@ Work only inside TARGET_SKILL_PATH/evals/. Read the target's shipped SKILL.md
 and resources, then follow SCHEMA_PATH. Do not inspect parent-chat context,
 candidate implementations, prior benchmark outputs, or proposed answers.
 Create a schema-version-3 suite, references, fixtures, source artifacts, and
-provenance hashes. Run audit_suite.py without model calls. Return only a factual
+provenance hashes. Run `skill-eval-loop audit` without model calls. Return only a factual
 handoff: files created, case IDs/count, behavior and routing coverage,
 activation mode, grader types, provenance paths, and audit result.
 ```

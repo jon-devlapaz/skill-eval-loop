@@ -26,7 +26,7 @@ The complete interaction contract is in
 ```bash
 export SKILL_EVAL_DIR="$PWD/.agents/skills/skill-eval-loop"
 
-python3 "$SKILL_EVAL_DIR/scripts/audit_suite.py" \
+"$SKILL_EVAL_DIR/scripts/skill-eval-loop" audit \
   --skill-path /path/to/target-skill
 ```
 
@@ -41,7 +41,7 @@ Start with a dry run. It validates the plan and reports the exact invocation
 count without creating a run or calling a model.
 
 ```bash
-python3 "$SKILL_EVAL_DIR/scripts/run_skill_eval.py" \
+"$SKILL_EVAL_DIR/scripts/skill-eval-loop" run \
   --skill-path /path/to/target-skill \
   --harness codex \
   --target-model MODEL_ID \
@@ -57,20 +57,20 @@ for the distinction between adapter implementation and live release evidence.
 
 ## Development
 
-The evaluator uses the Python standard library at runtime. Development checks
-require Python 3.11 or newer and Ruff.
+The installed evaluator is a self-contained Go binary selected by a thin
+macOS/Linux launcher. Development checks require Go 1.24 or newer.
 
 ```bash
-python3 -m unittest skills/skill-eval-loop/tests/test_skill_eval_loop.py
-bash skills/skill-eval-loop/scripts/healthcheck.sh
-ruff check tools tests skills/skill-eval-loop/scripts skills/skill-eval-loop/tests
+go test -race ./...
+go vet ./...
+skills/skill-eval-loop/scripts/healthcheck.sh
 ```
 
-The release identity verifier checks that Git, Tink receipts, and installed
-payload bytes and executable modes all identify the same commit:
+Tink verifies that installed payload bytes and executable modes match its lock:
 
 ```bash
-python3 tools/verify_release_identity.py --help
+tink skill lock
+tink skill verify
 ```
 
 ## License

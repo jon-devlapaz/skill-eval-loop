@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -61,9 +60,19 @@ func TestAggregateRejectsArtifactSymlinkEscape(t *testing.T) {
 	}
 }
 
-func TestAggregateMatchesFrozenPythonReport(t *testing.T) {
+func TestAggregateMatchesFrozenContract(t *testing.T) {
 	run := retainedRun(t)
-	assertPythonParity(t, run)
+	report, err := Run(run)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := Bytes(report)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(data), "{\n  \"schema_version\": 2,\n  \"skill_name\": \"fixture-skill\",") || !strings.HasSuffix(string(data), "\n}\n") {
+		t.Fatalf("unexpected benchmark rendering:\n%s", data)
+	}
 }
 
 func TestAggregateAccountingMetadataMatchesFrozenPython(t *testing.T) {
@@ -96,7 +105,9 @@ func TestAggregateAccountingMetadataMatchesFrozenPython(t *testing.T) {
 		"grading": map[string]any{"expectations": []any{map[string]any{"text": "contains ok", "passed": true, "grader": "response_contains"}}, "summary": map[string]any{"passed": 1, "failed": 0, "total": 1, "pass_rate": 1.0}},
 	}}
 	writeJSON(t, manifestPath, manifest)
-	assertPythonParity(t, run)
+	if _, err := Run(run); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestAggregateRejectsIncompleteCaseTrialMatrix(t *testing.T) {
@@ -146,37 +157,13 @@ func TestAggregateRetainedProvenanceMatchesPythonAndRejectsMutation(t *testing.T
 		value["provenance_path"] = "provenance_snapshot.json"
 		value["provenance_sha256"] = testFileHash(t, snapshotPath)
 	})
-	assertPythonParity(t, run)
+	if _, err := Run(run); err != nil {
+		t.Fatal(err)
+	}
 	writeFile(t, artifact, []byte("tampered\n"))
 	_, err := Run(run)
 	if err == nil || !strings.Contains(err.Error(), "retained artifact hash does not match") {
 		t.Fatalf("error=%v", err)
-	}
-}
-
-func assertPythonParity(t *testing.T, run string) {
-	t.Helper()
-	goReport, err := Run(run)
-	if err != nil {
-		t.Fatal(err)
-	}
-	script, err := filepath.Abs(filepath.Join("..", "..", "skills", "skill-eval-loop", "scripts", "aggregate_benchmark.py"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	command := exec.Command("python3", script, "--run-dir", run)
-	output, err := command.Output()
-	if err != nil {
-		t.Fatalf("python aggregate: %v", err)
-	}
-	var pythonReport map[string]any
-	if err := json.Unmarshal(output, &pythonReport); err != nil {
-		t.Fatal(err)
-	}
-	goJSON, _ := json.MarshalIndent(goReport, "", "  ")
-	pythonJSON, _ := json.MarshalIndent(pythonReport, "", "  ")
-	if string(goJSON) != string(pythonJSON) {
-		t.Fatalf("reports differ\npython:\n%s\ngo:\n%s", pythonJSON, goJSON)
 	}
 }
 

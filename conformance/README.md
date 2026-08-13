@@ -4,17 +4,18 @@
 implementations, retains each raw observation in its report, and fails when the
 normalized behavioral snapshots differ.
 
-The frozen Python oracle driver delegates directly to the five existing entry
-points. It contains no evaluator logic:
+During migration, the frozen Python oracle driver delegated directly to the five
+legacy entry points and contained no evaluator logic:
 
 ```sh
 go run ./cmd/skill-eval-conformance \
-  --oracle ./conformance/python-oracle \
+  --oracle ./path/to/frozen-python-oracle \
   --candidate ./path/to/skill-eval-loop \
   --scenario ./conformance/scenarios/audit-help.json
 ```
 
-The command fails closed when either implementation is absent, is not
+The checked-in scenarios and retained reports preserve that proof after Python
+removal. The command fails closed when either implementation is absent, is not
 executable, or resolves to the same filesystem object as the other.
 
 ## Scenario contract
