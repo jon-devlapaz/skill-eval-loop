@@ -1,0 +1,5 @@
+{
+  "name": "aggregate-help",
+  "command": "aggregate",
+  "args": ["--help"]
+}
