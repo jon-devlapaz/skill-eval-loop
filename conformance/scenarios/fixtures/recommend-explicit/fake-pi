@@ -15,5 +15,32 @@ if [ "${1:-}" = "--list-models" ]; then
     'openai-codex gpt-5.6-sol 272K 128K yes yes'
   exit 0
 fi
+with_skill=false
+for argument in "$@"; do
+  if [ "$argument" = "--skill" ]; then
+    with_skill=true
+  fi
+done
+if [ "${1:-}" = "--print" ]; then
+  order=2
+  session=session-control
+  response=no
+  skills='[]'
+  if [ "$with_skill" = true ]; then
+    order=3
+    session=session-treatment
+    response=ok
+    skills='["skill"]'
+  fi
+  printf '{"executable":"fake-pi","argv":["fake-pi"' >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  for argument in "$@"; do
+    escaped=$(printf '%s' "$argument" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    printf ',"%s"' "$escaped" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  done
+  printf '],"cwd":"%s","order":%s,"status":0,"timed_out":false}\n' "$PWD" "$order" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  printf '{"type":"system","subtype":"init","model":"provider/model-terra","session_id":"%s","skills":%s}\n' "$session" "$skills"
+  printf '{"message":{"role":"assistant","model":"provider/model-terra","content":[{"type":"text","text":"%s"}],"usage":{"input_tokens":1,"output_tokens":1}}}\n' "$response"
+  exit 0
+fi
 printf 'unexpected invocation\n' >&2
 exit 9

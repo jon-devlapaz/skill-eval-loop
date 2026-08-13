@@ -1,18 +1,24 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/jon-devlapaz/skill-eval-loop/internal/aggregate"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/audit"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/evalspec"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/recommend"
+	"github.com/jon-devlapaz/skill-eval-loop/internal/runexec"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/runplan"
 )
 
@@ -236,9 +242,9 @@ func runRun(arguments []string) int {
 	harness := flags.String("harness", "", "harness name")
 	harnessBin := flags.String("harness-bin", "", "harness executable")
 	piBin := flags.String("pi-bin", "", "Pi compatibility executable")
-	flags.Int("timeout-seconds", 120, "target timeout")
+	timeoutSeconds := flags.Int("timeout-seconds", 120, "target timeout")
 	judgeModel := flags.String("judge-model", "", "exact pinned judge model")
-	flags.Int("judge-timeout-seconds", 120, "judge timeout")
+	judgeTimeoutSeconds := flags.Int("judge-timeout-seconds", 120, "judge timeout")
 	observer := flags.String("observer", "headless", "headless or herdr")
 	dryRun := flags.Bool("dry-run", false, "validate and print the run plan")
 	if err := flags.Parse(arguments); err != nil {
@@ -248,10 +254,6 @@ func runRun(arguments []string) int {
 		fmt.Fprintln(os.Stderr, "ERROR: --skill-path, --model, and --harness are required")
 		return 2
 	}
-	if !*dryRun {
-		fmt.Fprintln(os.Stderr, "ERROR: run execution is not implemented yet")
-		return 1
-	}
 	plan, err := runplan.Build(runplan.Input{
 		SkillPath: *skillPath, EvalsPath: *evalsPath, OutputDir: *outputDir,
 		Model: *model, Trials: *trials, Harness: *harness, HarnessBin: *harnessBin,
@@ -260,6 +262,28 @@ func runRun(arguments []string) int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
 		return 1
+	}
+	if !*dryRun {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		report, runErr := runexec.Run(ctx, runexec.Input{Plan: plan, EvalsPath: *evalsPath, Timeout: time.Duration(*timeoutSeconds) * time.Second, JudgeModel: *judgeModel, JudgeTimeout: time.Duration(*judgeTimeoutSeconds) * time.Second})
+		if runErr != nil {
+			if errors.Is(runErr, context.Canceled) {
+				fmt.Fprintln(os.Stderr, "ERROR: evaluation cancelled; partial evidence was preserved")
+				return 130
+			}
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", runErr)
+			return 1
+		}
+		data, renderErr := aggregate.Bytes(report)
+		if renderErr != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", renderErr)
+			return 1
+		}
+		if _, writeErr := os.Stdout.Write(data); writeErr != nil {
+			return 1
+		}
+		return 0
 	}
 	data, err := runplan.Bytes(plan)
 	if err != nil {
