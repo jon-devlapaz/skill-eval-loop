@@ -6,6 +6,9 @@ The installed evaluator is now a self-contained Go binary selected by a thin
 POSIX launcher for Darwin/Linux on amd64/arm64. Legacy script names remain as
 shell launchers and contain no evaluator logic.
 
+Release binaries are built with `CGO_ENABLED=0`, `-buildvcs=false`, `-trimpath`,
+and `-ldflags='-s -w'`; independent rebuilds are byte-identical.
+
 ## Preserved surface
 
 - Commands: `audit`, `recommend-models`, `run`, `aggregate`, `healthcheck`.
@@ -16,9 +19,10 @@ shell launchers and contain no evaluator logic.
   hashes, model/runtime attestation, and operation accounting.
 - Headless execution and retained Herdr observation.
 
-The migration conformance suite was run against the frozen Python oracle before
-its removal. The retained-Python aggregate fixture remains checked in so Go can
-continue proving independent evidence revalidation.
+The final migration gate replayed 32 black-box scenarios against the frozen
+Python oracle reconstructed from the pre-removal commit. The retained-Python
+aggregate fixture remains checked in so Go can continue proving independent
+evidence revalidation.
 
 ## Benchmark
 
