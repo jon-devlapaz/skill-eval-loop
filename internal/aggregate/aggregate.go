@@ -493,13 +493,40 @@ func stringSlice(value any) []string {
 	return result
 }
 func usage(records []map[string]any, expected int) map[string]any {
-	return map[string]any{"errors": 0, "timeouts": 0, "tokens": nil, "cost": nil, "tokens_coverage": map[string]any{"reported": 0, "expected": expected}, "cost_coverage": map[string]any{"reported": 0, "expected": expected}}
+	errors, timeouts, tokens, tokenReports := 0, 0, 0, 0
+	cost, costReports := 0.0, 0
+	for _, record := range records {
+		exit, _ := intValue(record["exit_code"])
+		if exit != 0 {
+			errors++
+		}
+		if record["timed_out"] == true {
+			timeouts++
+		}
+		if value, ok := intValue(record["total_tokens"]); ok {
+			tokens += value
+			tokenReports++
+		}
+		if value, ok := record["cost"].(float64); ok {
+			cost += value
+			costReports++
+		}
+	}
+	var tokenValue, costValue any
+	if tokenReports > 0 {
+		tokenValue = tokens
+	}
+	if costReports > 0 {
+		costValue = cost
+	}
+	return map[string]any{"errors": errors, "timeouts": timeouts, "tokens": tokenValue, "cost": costValue, "tokens_coverage": map[string]any{"reported": tokenReports, "expected": expected}, "cost_coverage": map[string]any{"reported": costReports, "expected": expected}}
 }
 func usageBucket(records []map[string]any, expected int) map[string]any {
 	if expected == 0 && len(records) == 0 {
 		return map[string]any{"tokens": 0, "cost": 0.0, "tokens_coverage": map[string]any{"reported": 0, "expected": 0}, "cost_coverage": map[string]any{"reported": 0, "expected": 0}}
 	}
-	return map[string]any{"tokens": nil, "cost": nil, "tokens_coverage": map[string]any{"reported": 0, "expected": expected}, "cost_coverage": map[string]any{"reported": 0, "expected": expected}}
+	base := usage(records, expected)
+	return map[string]any{"tokens": base["tokens"], "cost": base["cost"], "tokens_coverage": base["tokens_coverage"], "cost_coverage": base["cost_coverage"]}
 }
 func unknownUsage() map[string]any {
 	return map[string]any{"tokens": nil, "cost": nil, "tokens_coverage": map[string]any{"reported": nil, "expected": nil}, "cost_coverage": map[string]any{"reported": nil, "expected": nil}}

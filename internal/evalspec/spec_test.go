@@ -101,6 +101,23 @@ func TestGradeCaseCoversDeterministicWorkspaceAndExternalGraders(t *testing.T) {
 	}
 }
 
+func TestGradeCaseJSONMatchesPythonEvidenceAndFloatRendering(t *testing.T) {
+	result, err := GradeCase(t.TempDir(), "no", []map[string]any{{
+		"name": "contains", "type": "response_contains", "value": "ok",
+	}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "{\n  \"grader\": {\n    \"kind\": \"deterministic_mixed\",\n    \"schema_version\": 2\n  },\n  \"expectations\": [\n    {\n      \"text\": \"contains\",\n      \"passed\": false,\n      \"evidence\": \"'ok' not found in response\",\n      \"grader\": \"response_contains\"\n    }\n  ],\n  \"summary\": {\n    \"passed\": 0,\n    \"failed\": 1,\n    \"total\": 1,\n    \"pass_rate\": 0.0\n  }\n}"
+	if string(data) != want {
+		t.Fatalf("json mismatch\ngot:\n%s\nwant:\n%s", data, want)
+	}
+}
+
 func TestGradeCaseRejectsWorkspaceSymlinkEscape(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("migration target is macOS/Linux")

@@ -91,10 +91,20 @@ type Expectation struct {
 }
 
 type GradeSummary struct {
-	Passed   int     `json:"passed"`
-	Failed   int     `json:"failed"`
-	Total    int     `json:"total"`
-	PassRate float64 `json:"pass_rate"`
+	Passed   int         `json:"passed"`
+	Failed   int         `json:"failed"`
+	Total    int         `json:"total"`
+	PassRate PythonFloat `json:"pass_rate"`
+}
+
+type PythonFloat float64
+
+func (value PythonFloat) MarshalJSON() ([]byte, error) {
+	text := strconv.FormatFloat(float64(value), 'g', -1, 64)
+	if !strings.ContainsAny(text, ".eE") {
+		text += ".0"
+	}
+	return []byte(text), nil
 }
 
 func GradeCase(workspace, response string, graders []map[string]any, external map[string]map[string]any) (GradeResult, error) {
@@ -161,7 +171,7 @@ func GradeCase(workspace, response string, graders []map[string]any, external ma
 	}
 	result.Summary.Total = len(result.Expectations)
 	result.Summary.Failed = result.Summary.Total - result.Summary.Passed
-	result.Summary.PassRate = float64(result.Summary.Passed) / float64(result.Summary.Total)
+	result.Summary.PassRate = PythonFloat(float64(result.Summary.Passed) / float64(result.Summary.Total))
 	return result, nil
 }
 
@@ -173,32 +183,60 @@ func responseEvidence(response string, grader map[string]any, passed bool) strin
 		if passed {
 			state = "found"
 		}
-		return fmt.Sprintf("%q %s in response", needle, state)
+		return fmt.Sprintf("%s %s in response", pythonStringRepr(needle), state)
 	case "response_not_contains":
 		needle := grader["value"].(string)
 		state := "present"
 		if passed {
 			state = "absent"
 		}
-		return fmt.Sprintf("%q %s in response", needle, state)
+		return fmt.Sprintf("%s %s in response", pythonStringRepr(needle), state)
 	case "response_regex":
 		pattern := grader["pattern"].(string)
 		match := regexp.MustCompile(pattern).FindString(response)
 		if passed {
-			return fmt.Sprintf("matched %q", match)
+			return fmt.Sprintf("matched %s", pythonStringRepr(match))
 		}
-		return fmt.Sprintf("pattern %q did not match", pattern)
+		return fmt.Sprintf("pattern %s did not match", pythonStringRepr(pattern))
 	case "markdown_table_column_regex":
 		pattern := grader["pattern"].(string)
 		column := grader["column"].(string)
 		text := markdownColumn(response, column)
 		match := regexp.MustCompile(pattern).FindString(text)
 		if passed {
-			return fmt.Sprintf("column %q matched %q", column, match)
+			return fmt.Sprintf("column %s matched %s", pythonStringRepr(column), pythonStringRepr(match))
 		}
-		return fmt.Sprintf("pattern %q did not match column %q; observed=%q", pattern, column, text)
+		return fmt.Sprintf("pattern %s did not match column %s; observed=%s", pythonStringRepr(pattern), pythonStringRepr(column), pythonStringRepr(text))
 	}
 	return ""
+}
+
+func pythonStringRepr(value string) string {
+	quote := '\''
+	if strings.ContainsRune(value, '\'') && !strings.ContainsRune(value, '"') {
+		quote = '"'
+	}
+	var result strings.Builder
+	result.WriteRune(quote)
+	for _, current := range value {
+		switch current {
+		case '\\':
+			result.WriteString(`\\`)
+		case '\n':
+			result.WriteString(`\n`)
+		case '\r':
+			result.WriteString(`\r`)
+		case '\t':
+			result.WriteString(`\t`)
+		default:
+			if current == quote {
+				result.WriteRune('\\')
+			}
+			result.WriteRune(current)
+		}
+	}
+	result.WriteRune(quote)
+	return result.String()
 }
 
 func jsonEqual(left, right any) bool {
