@@ -1537,6 +1537,61 @@ class RuntimeTests(unittest.TestCase):
             self.assertFalse(metadata["model_attested"])
             self.assertTrue(metadata["model_attestation_conflict"])
 
+    def test_pi_trace_combines_separate_provider_and_model_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            trace = Path(temp) / "trace.jsonl"
+            trace.write_text(
+                json.dumps(
+                    {
+                        "type": "message_start",
+                        "message": {
+                            "role": "assistant",
+                            "provider": "openai-codex",
+                            "model": "gpt-5.6-sol",
+                            "content": [],
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            metadata = trace_metadata(trace, "", harness="pi")
+            self.assertEqual(metadata["actual_model"], "openai-codex/gpt-5.6-sol")
+            self.assertTrue(metadata["model_attested"])
+            self.assertFalse(metadata["model_attestation_conflict"])
+            self.assertTrue(
+                model_matches(
+                    "openai-codex/gpt-5.6-sol",
+                    metadata["actual_model"],
+                )
+            )
+
+    def test_pi_trace_conflicting_separate_providers_fail_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            trace = Path(temp) / "trace.jsonl"
+            trace.write_text(
+                "\n".join(
+                    json.dumps(
+                        {
+                            "type": "message_start",
+                            "message": {
+                                "role": "assistant",
+                                "provider": provider,
+                                "model": "model-1",
+                                "content": [],
+                            },
+                        }
+                    )
+                    for provider in ("provider-a", "provider-b")
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            metadata = trace_metadata(trace, "", harness="pi")
+            self.assertEqual(metadata["actual_model"], "")
+            self.assertFalse(metadata["model_attested"])
+            self.assertTrue(metadata["model_attestation_conflict"])
+
     def test_codex_skill_catalog_with_description_attests_injection(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
