@@ -138,6 +138,10 @@ collect exact ids from its model picker and rerun with
 `--models exact-id-1,exact-id-2`. Availability, price, and quota come only from
 live discovery or the user — invent none.
 
+Pin the identity exactly as the selected harness reports it. Attestation
+normalizes surrounding whitespace and case only: provider-qualified and bare
+model ids are distinct, and no provider or model aliases are inferred.
+
 Show the budget, balanced, and quality frontier; disclose tier fallbacks and
 unknown cost. For a release claim, prefer the intended deployment model. For
 portability, plan separate runs across tiers. Use no judge when the suite is

@@ -51,12 +51,16 @@ def validate_pinned_model(model: str) -> None:
         raise ValueError("use an exact pinned model id, not a moving alias")
 
 
+def _normalized_model_identity(model: object) -> str:
+    if not isinstance(model, str):
+        return ""
+    return model.strip().lower()
+
+
 def model_matches(requested: str, actual: object) -> bool:
-    if not isinstance(actual, str) or not actual:
-        return False
-    requested_leaf = requested.rsplit("/", 1)[-1].lower()
-    actual_leaf = actual.rsplit("/", 1)[-1].lower()
-    return requested_leaf == actual_leaf
+    requested_identity = _normalized_model_identity(requested)
+    actual_identity = _normalized_model_identity(actual)
+    return bool(requested_identity) and requested_identity == actual_identity
 
 
 def resolve_harness(
@@ -704,9 +708,9 @@ def trace_metadata(
         responses.append(raw_trace.strip())
     usage = usage_records[-1] if usage_records else {}
     model_identities = {
-        model.rsplit("/", 1)[-1].lower()
+        identity
         for model in models
-        if model.strip()
+        if (identity := _normalized_model_identity(model))
     }
     model_attestation_conflict = len(model_identities) > 1
     actual_model = (

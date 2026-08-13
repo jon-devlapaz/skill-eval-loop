@@ -949,11 +949,35 @@ class TargetAttestationOwnerTests(unittest.TestCase):
                 trace_path=Path("/tmp/trace.jsonl"),
             )
 
+    def test_require_reports_cross_provider_same_leaf_mismatch(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            (
+                "requested target model provider-a/model-1 but attested "
+                "provider-b/model-1"
+            ),
+        ):
+            require_target_runtime_attestation(
+                self._ok_metadata(actual_model="provider-b/model-1"),
+                harness="codex",
+                requested_model="provider-a/model-1",
+                condition="without_skill",
+                activation_mode="forced",
+                skill_name="fixture-skill",
+                trace_path=Path("/tmp/trace.jsonl"),
+            )
+
 
 class RuntimeTests(unittest.TestCase):
-    def test_model_identity_rejects_suffix_collisions(self) -> None:
+    def test_model_identity_requires_the_full_provider_and_model(self) -> None:
         self.assertTrue(
+            model_matches(" Provider/GPT-5.6-Terra ", "provider/gpt-5.6-terra")
+        )
+        self.assertFalse(
             model_matches("provider/gpt-5.6-terra", "gpt-5.6-terra")
+        )
+        self.assertFalse(
+            model_matches("provider-a/model-1", "provider-b/model-1")
         )
         self.assertFalse(
             model_matches("provider/model-1", "provider/model-1-preview")
@@ -1330,6 +1354,31 @@ class RuntimeTests(unittest.TestCase):
                 requested_model="gpt-5.6-terra",
                 codex_home=codex_home,
             )
+            self.assertEqual(metadata["actual_model"], "")
+            self.assertFalse(metadata["model_attested"])
+            self.assertTrue(metadata["model_attestation_conflict"])
+
+    def test_same_leaf_models_from_different_providers_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            trace = Path(temp) / "trace.jsonl"
+            trace.write_text(
+                "\n".join(
+                    json.dumps(
+                        {
+                            "type": "system",
+                            "subtype": "init",
+                            "model": model,
+                        }
+                    )
+                    for model in (
+                        "provider-a/model-1",
+                        "provider-b/model-1",
+                    )
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            metadata = trace_metadata(trace, "")
             self.assertEqual(metadata["actual_model"], "")
             self.assertFalse(metadata["model_attested"])
             self.assertTrue(metadata["model_attestation_conflict"])
