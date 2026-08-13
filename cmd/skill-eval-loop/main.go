@@ -93,11 +93,15 @@ func runRecommend(arguments []string) int {
 	}
 	models := recommend.ParseExplicit(*modelsValue)
 	if *modelsValue == "" {
-		if *harness != "pi" {
+		switch *harness {
+		case "pi":
+			models, err = recommend.DiscoverPi(resolved)
+		case "codex":
+			models, err = recommend.DiscoverCodex()
+		default:
 			writeRecommendError("native model discovery is not implemented yet for this harness; pass --models with exact comma-separated ids")
 			return 1
 		}
-		models, err = recommend.DiscoverPi(resolved)
 		if err != nil {
 			writeRecommendError(err.Error())
 			return 1

@@ -1,0 +1,14 @@
+{
+  "name": "recommend-codex-cache-standard",
+  "command": "recommend-models",
+  "args": [
+    "--skill-path", "skill",
+    "--harness", "codex",
+    "--harness-bin", "./fake-codex",
+    "--task-profile", "standard"
+  ],
+  "fixture": "fixtures/recommend-explicit",
+  "environment": {
+    "CODEX_HOME": "codex-home"
+  }
+}

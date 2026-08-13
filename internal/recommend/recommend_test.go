@@ -1,6 +1,9 @@
 package recommend
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestStandardExplicitInventoryRecommendation(t *testing.T) {
 	models := ParseExplicit("provider/model-luna,provider/model-balanced,provider/model-sol")
@@ -64,5 +67,27 @@ openai-codex gpt-5.6-sol 272K 128K yes yes
 		if models[index].ID != want[index] || models[index].Source != "pi --list-models" {
 			t.Fatalf("models[%d]=%#v", index, models[index])
 		}
+	}
+}
+
+func TestParseCodexCacheFiltersVisibilityAndUsesDescription(t *testing.T) {
+	models, err := ParseCodexCache([]byte(`{
+  "fetched_at": "2026-08-13T12:00:00Z",
+  "models": [
+    {"slug": "gpt-main", "description": "pro reasoning", "visibility": "list"},
+    {"slug": "gpt-hidden", "description": "", "visibility": "hide"},
+    {"slug": "gpt-default", "description": ""},
+    {"slug": 7, "description": "ignored"}
+  ]
+}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Model{
+		{ID: "gpt-main", Tier: "quality", Source: "Codex authenticated cache (2026-08-13T12:00:00Z)", Description: "pro reasoning"},
+		{ID: "gpt-default", Tier: "balanced", Source: "Codex authenticated cache (2026-08-13T12:00:00Z)"},
+	}
+	if !reflect.DeepEqual(models, want) {
+		t.Fatalf("models=%#v", models)
 	}
 }

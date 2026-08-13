@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -83,6 +85,70 @@ func DiscoverPi(executable string) ([]Model, error) {
 	return uniqueSorted(ParsePiModels(string(output))), nil
 }
 
+func ParseCodexCache(data []byte) ([]Model, error) {
+	var cache map[string]any
+	if err := json.Unmarshal(data, &cache); err != nil {
+		return nil, err
+	}
+	fetchedAt := "unknown time"
+	if value, ok := cache["fetched_at"]; ok {
+		fetchedAt = pythonString(value)
+	}
+	models := []Model{}
+	items, _ := cache["models"].([]any)
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		slug, ok := item["slug"].(string)
+		if !ok {
+			continue
+		}
+		visibility := "list"
+		if value, exists := item["visibility"]; exists {
+			visibility, _ = value.(string)
+		}
+		if visibility != "list" {
+			continue
+		}
+		description := ""
+		if value, exists := item["description"]; exists {
+			description = pythonString(value)
+		}
+		models = append(models, Model{
+			ID: slug, Tier: InferTier(slug, description),
+			Source: "Codex authenticated cache (" + fetchedAt + ")", Description: description,
+		})
+	}
+	return models, nil
+}
+
+func DiscoverCodex() ([]Model, error) {
+	home := os.Getenv("CODEX_HOME")
+	if home == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		home = filepath.Join(userHome, ".codex")
+	}
+	cachePath := filepath.Join(home, "models_cache.json")
+	info, err := os.Stat(cachePath)
+	if err != nil || !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("Codex has no models cache; open Codex once to refresh its authenticated model picker, or pass --models with exact comma-separated ids")
+	}
+	data, err := os.ReadFile(cachePath)
+	if err != nil {
+		return nil, err
+	}
+	models, err := ParseCodexCache(data)
+	if err != nil {
+		return nil, err
+	}
+	return uniqueSorted(models), nil
+}
+
 func uniqueSorted(models []Model) []Model {
 	unique := map[string]Model{}
 	for _, model := range models {
@@ -100,6 +166,20 @@ func uniqueSorted(models []Model) []Model {
 		return result[i].ID < result[j].ID
 	})
 	return result
+}
+
+func pythonString(value any) string {
+	switch current := value.(type) {
+	case nil:
+		return "None"
+	case bool:
+		if current {
+			return "True"
+		}
+		return "False"
+	default:
+		return fmt.Sprint(current)
+	}
 }
 
 func Build(input Input) (map[string]any, error) {
