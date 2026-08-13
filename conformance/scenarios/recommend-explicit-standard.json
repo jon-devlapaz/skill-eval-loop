@@ -1,0 +1,12 @@
+{
+  "name": "recommend-explicit-standard",
+  "command": "recommend-models",
+  "args": [
+    "--skill-path", "skill",
+    "--harness", "pi",
+    "--harness-bin", "./fake-pi",
+    "--task-profile", "standard",
+    "--models", "provider/model-luna,provider/model-balanced,provider/model-sol"
+  ],
+  "fixture": "fixtures/recommend-explicit"
+}

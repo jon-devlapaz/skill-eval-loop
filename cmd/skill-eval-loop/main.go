@@ -5,10 +5,14 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"github.com/jon-devlapaz/skill-eval-loop/internal/aggregate"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/audit"
+	"github.com/jon-devlapaz/skill-eval-loop/internal/evalspec"
+	"github.com/jon-devlapaz/skill-eval-loop/internal/recommend"
 )
 
 func main() {
@@ -21,9 +25,11 @@ func main() {
 		os.Exit(runAudit(os.Args[2:]))
 	case "aggregate":
 		os.Exit(runAggregate(os.Args[2:]))
+	case "recommend-models":
+		os.Exit(runRecommend(os.Args[2:]))
 	case "help", "-h", "--help":
 		usage()
-	case "recommend-models", "run", "healthcheck":
+	case "run", "healthcheck":
 		fmt.Fprintf(os.Stderr, "ERROR: %s is not implemented yet\n", os.Args[1])
 		os.Exit(1)
 	default:
@@ -31,6 +37,83 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+}
+
+func runRecommend(arguments []string) int {
+	flags := flag.NewFlagSet("recommend-models", flag.ContinueOnError)
+	flags.SetOutput(os.Stderr)
+	skillPath := flags.String("skill-path", "", "target skill directory")
+	harness := flags.String("harness", "", "harness name")
+	harnessBin := flags.String("harness-bin", "", "harness executable")
+	profile := flags.String("task-profile", "", "task profile")
+	modelsValue := flags.String("models", "", "exact comma-separated model ids")
+	if err := flags.Parse(arguments); err != nil {
+		return 2
+	}
+	if *skillPath == "" || *harness == "" || *profile == "" {
+		fmt.Fprintln(os.Stderr, "ERROR: --skill-path, --harness, and --task-profile are required")
+		return 2
+	}
+	if *modelsValue == "" {
+		writeRecommendError("native model discovery is not implemented yet; pass --models with exact comma-separated ids")
+		return 1
+	}
+	executable := *harnessBin
+	if executable == "" {
+		executable = map[string]string{"pi": "pi", "codex": "codex", "hermes": "hermes", "claude-code": "claude"}[*harness]
+	}
+	resolved, err := exec.LookPath(executable)
+	if err != nil {
+		writeRecommendError(fmt.Sprintf("%s executable not found: %s", *harness, executable))
+		return 1
+	}
+	versionCommand := exec.Command(resolved, "--version")
+	versionOutput, err := versionCommand.Output()
+	if err != nil {
+		writeRecommendError(err.Error())
+		return 1
+	}
+	version := strings.TrimSpace(string(versionOutput))
+	if version == "" {
+		writeRecommendError(fmt.Sprintf("%s returned an empty version", *harness))
+		return 1
+	}
+	suite, err := evalspec.Load(*skillPath, "")
+	if err != nil {
+		writeRecommendError(err.Error())
+		return 1
+	}
+	counts := make([]int, len(suite.Cases))
+	counters := make([]bool, len(suite.Cases))
+	total := 0
+	for index, current := range suite.Cases {
+		for _, grader := range current.Graders {
+			if grader["type"] == "model_rubric" {
+				counts[index]++
+				total++
+			}
+		}
+		counters[index] = current.HasCounterReference
+	}
+	report, err := recommend.Build(recommend.Input{Harness: *harness, Models: recommend.ParseExplicit(*modelsValue), TaskProfile: *profile, CaseCount: len(suite.Cases), ModelRubricCounts: counts, CounterReferences: counters, Trials: 1})
+	if err != nil {
+		writeRecommendError(err.Error())
+		return 1
+	}
+	data, err := recommend.Bytes(report, version, suite.SkillName, len(suite.Cases), total)
+	if err != nil {
+		writeRecommendError(err.Error())
+		return 1
+	}
+	if _, err = os.Stdout.Write(data); err != nil {
+		return 1
+	}
+	return 0
+}
+
+func writeRecommendError(message string) {
+	data, _ := json.MarshalIndent(map[string]any{"valid": false, "error": message}, "", "  ")
+	os.Stdout.Write(append(data, '\n'))
 }
 
 func runAggregate(arguments []string) int {
