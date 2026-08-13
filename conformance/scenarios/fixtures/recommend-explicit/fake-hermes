@@ -1,7 +1,11 @@
 #!/bin/sh
 set -eu
+next_order() {
+  if [ -f "$SKILL_EVAL_CONFORMANCE_LOG" ]; then lines=$(wc -l < "$SKILL_EVAL_CONFORMANCE_LOG"); else lines=0; fi
+  printf '%s' $((lines + 1))
+}
 if [ "${1:-}" = "--version" ]; then
-  printf '{"executable":"fake-hermes","argv":["fake-hermes","--version"],"cwd":"%s","order":1,"status":0,"timed_out":false}\n' "$PWD" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  printf '{"executable":"fake-hermes","argv":["fake-hermes","--version"],"cwd":"%s","order":%s,"status":0,"timed_out":false}\n' "$PWD" "$(next_order)" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   printf 'fake-hermes 1.0\n'
   exit 0
 fi
@@ -9,22 +13,31 @@ if [ "${1:-}" = "-z" ]; then
   with_skill=false
   usage_file=''
   model=''
+  skill_name=skill
+  is_judge=false
+  prompt=''
   previous=''
   for argument in "$@"; do
     if [ "$previous" = "--usage-file" ]; then usage_file=$argument; fi
     if [ "$previous" = "--model" ]; then model=$argument; fi
     if [ "$argument" = "--skills" ]; then with_skill=true; fi
+    if [ "$previous" = "--skills" ]; then skill_name=$argument; fi
+    case "$argument" in *'You are grading one agent response.'*) is_judge=true; prompt=$argument ;; esac
     previous=$argument
   done
   session=session-hermes-control
   response=no
   skills='[]'
-  order=2
-  if [ "$with_skill" = true ]; then
+  order=$(next_order)
+  if [ "$is_judge" = true ]; then
+    session=session-hermes-judge-$order
+    marker='CANDIDATE:
+ok'
+    if [ "${prompt#*"$marker"}" != "$prompt" ]; then response='{\"passed\": true, \"reason\": \"fixture accepts ok\"}'; else response='{\"passed\": false, \"reason\": \"fixture rejects non-ok\"}'; fi
+  elif [ "$with_skill" = true ]; then
     session=session-hermes-treatment
     response=ok
-    skills='["skill"]'
-    order=3
+    skills="[\"$skill_name\"]"
   fi
   printf '{"executable":"fake-hermes","argv":["fake-hermes"' >> "$SKILL_EVAL_CONFORMANCE_LOG"
   for argument in "$@"; do

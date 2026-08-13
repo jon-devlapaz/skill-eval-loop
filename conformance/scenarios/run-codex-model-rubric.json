@@ -1,0 +1,7 @@
+{
+  "name": "run-codex-model-rubric",
+  "command": "run",
+  "args": ["--skill-path", "skill-rubric", "--output-dir", "run-output", "--model", "provider/model-terra", "--judge-model", "provider/judge-terra", "--trials", "1", "--harness", "codex", "--harness-bin", "$WORKSPACE/fake-codex"],
+  "fixture": "fixtures/recommend-explicit",
+  "environment": {"CODEX_HOME": "$WORKSPACE/codex-home"}
+}

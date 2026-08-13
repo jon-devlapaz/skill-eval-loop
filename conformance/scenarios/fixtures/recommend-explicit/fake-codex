@@ -1,30 +1,47 @@
 #!/bin/sh
 set -eu
+next_order() {
+  if [ -f "$SKILL_EVAL_CONFORMANCE_LOG" ]; then lines=$(wc -l < "$SKILL_EVAL_CONFORMANCE_LOG"); else lines=0; fi
+  printf '%s' $((lines + 1))
+}
 if [ "${1:-}" = "--version" ]; then
-  printf '{"executable":"fake-codex","argv":["fake-codex","--version"],"cwd":"%s","order":1,"status":0,"timed_out":false}\n' "$PWD" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  printf '{"executable":"fake-codex","argv":["fake-codex","--version"],"cwd":"%s","order":%s,"status":0,"timed_out":false}\n' "$PWD" "$(next_order)" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   printf 'fake-codex 1.0\n'
   exit 0
 fi
 if [ "${1:-}" = "exec" ]; then
   with_skill=false
+  skill_name=skill
+  is_judge=false
+  model=''
+  previous=''
+  prompt=''
   for argument in "$@"; do
     case "$argument" in
       'Use the $skill skill.'*) with_skill=true ;;
+      'Use the $skill-rubric skill.'*) with_skill=true; skill_name=skill-rubric ;;
+      *'You are grading one agent response.'*) is_judge=true; prompt=$argument ;;
     esac
+    if [ "$previous" = "--model" ]; then model=$argument; fi
+    previous=$argument
   done
   thread=thread-codex-control
   response=no
   skills='[]'
-  order=2
-  if [ "$with_skill" = true ]; then
+  order=$(next_order)
+  if [ "$is_judge" = true ]; then
+    thread=thread-codex-judge-$order
+    marker='CANDIDATE:
+ok'
+    if [ "${prompt#*"$marker"}" != "$prompt" ]; then response='{\"passed\": true, \"reason\": \"fixture accepts ok\"}'; else response='{\"passed\": false, \"reason\": \"fixture rejects non-ok\"}'; fi
+  elif [ "$with_skill" = true ]; then
     thread=thread-codex-treatment
     response=ok
-    skills='["skill"]'
-    order=3
+    skills="[\"$skill_name\"]"
   fi
   printf '{"executable":"fake-codex","argv":["fake-codex"' >> "$SKILL_EVAL_CONFORMANCE_LOG"
   for argument in "$@"; do
-    escaped=$(printf '%s' "$argument" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    escaped=$(printf '%s' "$argument" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN { ORS="" } NR > 1 { printf "\\n" } { printf "%s", $0 }')
     printf ',"%s"' "$escaped" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   done
   escaped_home=$(printf '%s' "$HOME" | sed 's/\\/\\\\/g; s/"/\\"/g')
@@ -32,12 +49,12 @@ if [ "${1:-}" = "exec" ]; then
   printf '],"cwd":"%s","environment":{"HOME":"%s","CODEX_HOME":"%s"},"order":%s,"status":0,"timed_out":false}\n' "$PWD" "$escaped_home" "$escaped_codex" "$order" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   mkdir -p "$CODEX_HOME/sessions/fixture"
   rollout="$CODEX_HOME/sessions/fixture/rollout-$thread.jsonl"
-  printf '{"type":"turn_context","payload":{"model":"provider/model-terra"}}\n' > "$rollout"
+  printf '{"type":"turn_context","payload":{"model":"%s"}}\n' "$model" > "$rollout"
   if [ "$with_skill" = true ]; then
-    printf '{"type":"world_state","payload":{"state":{"host_skills":{"body":"- skill: fixture (file: %s/.agents/skills/skill/SKILL.md)"}}}}\n' "$PWD" >> "$rollout"
-    printf '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<skill>\\n<name>skill</name>\\n<path>%s/.agents/skills/skill/SKILL.md</path>\\n</skill>"}]}}\n' "$PWD" >> "$rollout"
+    printf '{"type":"world_state","payload":{"state":{"host_skills":{"body":"- %s: fixture (file: %s/.agents/skills/%s/SKILL.md)"}}}}\n' "$skill_name" "$PWD" "$skill_name" >> "$rollout"
+    printf '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"<skill>\\n<name>%s</name>\\n<path>%s/.agents/skills/%s/SKILL.md</path>\\n</skill>"}]}}\n' "$skill_name" "$PWD" "$skill_name" >> "$rollout"
   fi
-  printf '{"type":"system","subtype":"init","model":"provider/model-terra","skills":%s}\n' "$skills"
+  printf '{"type":"system","subtype":"init","model":"%s","skills":%s}\n' "$model" "$skills"
   printf '{"type":"thread.started","thread_id":"%s"}\n' "$thread"
   printf '{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\n' "$response"
   printf '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}\n'

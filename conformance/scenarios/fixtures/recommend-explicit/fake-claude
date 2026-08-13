@@ -1,35 +1,52 @@
 #!/bin/sh
 set -eu
+next_order() {
+  if [ -f "$SKILL_EVAL_CONFORMANCE_LOG" ]; then lines=$(wc -l < "$SKILL_EVAL_CONFORMANCE_LOG"); else lines=0; fi
+  printf '%s' $((lines + 1))
+}
 if [ "${1:-}" = "--version" ]; then
-  printf '{"executable":"fake-claude","argv":["fake-claude","--version"],"cwd":"%s","order":1,"status":0,"timed_out":false}\n' "$PWD" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  printf '{"executable":"fake-claude","argv":["fake-claude","--version"],"cwd":"%s","order":%s,"status":0,"timed_out":false}\n' "$PWD" "$(next_order)" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   printf 'fake-claude 1.0\n'
   exit 0
 fi
 if [ "${1:-}" = "-p" ]; then
   with_skill=false
+  skill_name=skill
+  is_judge=false
+  model=''
+  previous=''
+  prompt=''
   for argument in "$@"; do
     case "$argument" in
       /skill*) with_skill=true ;;
+      /skill-rubric*) skill_name=skill-rubric ;;
+      *'You are grading one agent response.'*) is_judge=true; prompt=$argument ;;
     esac
+    if [ "$previous" = "--model" ]; then model=$argument; fi
+    previous=$argument
   done
   session=session-claude-control
   response=no
   skills='[]'
-  order=2
-  if [ "$with_skill" = true ]; then
+  order=$(next_order)
+  if [ "$is_judge" = true ]; then
+    session=session-claude-judge-$order
+    marker='CANDIDATE:
+ok'
+    if [ "${prompt#*"$marker"}" != "$prompt" ]; then response='{\"passed\": true, \"reason\": \"fixture accepts ok\"}'; else response='{\"passed\": false, \"reason\": \"fixture rejects non-ok\"}'; fi
+  elif [ "$with_skill" = true ]; then
     session=session-claude-treatment
     response=ok
-    skills='["skill"]'
-    order=3
+    skills="[\"$skill_name\"]"
   fi
   printf '{"executable":"fake-claude","argv":["fake-claude"' >> "$SKILL_EVAL_CONFORMANCE_LOG"
   for argument in "$@"; do
-    escaped=$(printf '%s' "$argument" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    escaped=$(printf '%s' "$argument" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN { ORS="" } NR > 1 { printf "\\n" } { printf "%s", $0 }')
     printf ',"%s"' "$escaped" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   done
   printf '],"cwd":"%s","order":%s,"status":0,"timed_out":false}\n' "$PWD" "$order" >> "$SKILL_EVAL_CONFORMANCE_LOG"
-  printf '{"type":"system","subtype":"init","model":"provider/model-terra","session_id":"%s","skills":%s}\n' "$session" "$skills"
-  printf '{"message":{"role":"assistant","model":"provider/model-terra","content":[{"type":"text","text":"%s"}],"usage":{"input_tokens":1,"output_tokens":1}}}\n' "$response"
+  printf '{"type":"system","subtype":"init","model":"%s","session_id":"%s","skills":%s}\n' "$model" "$session" "$skills"
+  printf '{"message":{"role":"assistant","model":"%s","content":[{"type":"text","text":"%s"}],"usage":{"input_tokens":1,"output_tokens":1}}}\n' "$model" "$response"
   exit 0
 fi
 printf 'unexpected invocation\n' >&2

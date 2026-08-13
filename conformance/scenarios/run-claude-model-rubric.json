@@ -1,0 +1,6 @@
+{
+  "name": "run-claude-model-rubric",
+  "command": "run",
+  "args": ["--skill-path", "skill-rubric", "--output-dir", "run-output", "--model", "provider/model-terra", "--judge-model", "provider/judge-terra", "--trials", "1", "--harness", "claude-code", "--harness-bin", "$WORKSPACE/fake-claude"],
+  "fixture": "fixtures/recommend-explicit"
+}
