@@ -32,13 +32,21 @@ if [ "${1:-}" = "--print" ]; then
     response=ok
     skills='["skill"]'
   fi
+	status=0
+	timed_out=false
+	case "$argument" in
+	  *TIMEOUT*) status=124; timed_out=true ;;
+	esac
   printf '{"executable":"fake-pi","argv":["fake-pi"' >> "$SKILL_EVAL_CONFORMANCE_LOG"
   for argument in "$@"; do
     escaped=$(printf '%s' "$argument" | sed 's/\\/\\\\/g; s/"/\\"/g')
     printf ',"%s"' "$escaped" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   done
-  printf '],"cwd":"%s","order":%s,"status":0,"timed_out":false}\n' "$PWD" "$order" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+	printf '],"cwd":"%s","order":%s,"status":%s,"timed_out":%s}\n' "$PWD" "$order" "$status" "$timed_out" >> "$SKILL_EVAL_CONFORMANCE_LOG"
   printf '{"type":"system","subtype":"init","model":"provider/model-terra","session_id":"%s","skills":%s}\n' "$session" "$skills"
+	if [ "$timed_out" = true ]; then
+	  sleep 30
+	fi
   printf '{"message":{"role":"assistant","model":"provider/model-terra","content":[{"type":"text","text":"%s"}],"usage":{"input_tokens":1,"output_tokens":1}}}\n' "$response"
   exit 0
 fi

@@ -1,0 +1,15 @@
+{
+  "name": "run-pi-timeout-retains-partial",
+  "command": "run",
+  "args": [
+    "--skill-path", "skill-timeout",
+    "--output-dir", "timeout-output",
+    "--model", "provider/model-terra",
+    "--trials", "1",
+    "--harness", "pi",
+    "--harness-bin", "$WORKSPACE/fake-pi",
+    "--timeout-seconds", "1"
+  ],
+  "fixture": "fixtures/recommend-explicit",
+  "timeout_ms": 5000
+}
