@@ -72,6 +72,151 @@ type Discrimination struct {
 	ModelGradersPendingRuntime  int
 }
 
+type GradeResult struct {
+	Grader       GradeOwner    `json:"grader"`
+	Expectations []Expectation `json:"expectations"`
+	Summary      GradeSummary  `json:"summary"`
+}
+
+type GradeOwner struct {
+	Kind          string `json:"kind"`
+	SchemaVersion int    `json:"schema_version"`
+}
+
+type Expectation struct {
+	Text     string `json:"text"`
+	Passed   bool   `json:"passed"`
+	Evidence string `json:"evidence"`
+	Grader   string `json:"grader"`
+}
+
+type GradeSummary struct {
+	Passed   int     `json:"passed"`
+	Failed   int     `json:"failed"`
+	Total    int     `json:"total"`
+	PassRate float64 `json:"pass_rate"`
+}
+
+func GradeCase(workspace, response string, graders []map[string]any, external map[string]map[string]any) (GradeResult, error) {
+	result := GradeResult{Grader: GradeOwner{Kind: "deterministic_mixed", SchemaVersion: 2}}
+	for _, grader := range graders {
+		typeName := grader["type"].(string)
+		name := grader["name"].(string)
+		expectation := Expectation{Text: name, Grader: typeName}
+		switch typeName {
+		case "response_contains", "response_not_contains", "response_regex", "markdown_table_column_regex":
+			passed, err := GradeResponse(response, grader)
+			if err != nil {
+				return GradeResult{}, err
+			}
+			expectation.Passed = passed
+			expectation.Evidence = responseEvidence(response, grader, passed)
+		case "model_rubric":
+			grade, ok := external[name]
+			if !ok {
+				return GradeResult{}, fmt.Errorf("missing external model grade for %q", name)
+			}
+			passed, ok := grade["passed"].(bool)
+			if !ok {
+				return GradeResult{}, fmt.Errorf("external model grade %q needs boolean passed", name)
+			}
+			evidence := strings.TrimSpace(stringValue(grade["evidence"]))
+			if evidence == "" {
+				return GradeResult{}, fmt.Errorf("external model grade %q needs evidence", name)
+			}
+			expectation.Passed, expectation.Evidence = passed, evidence
+		case "file_exists":
+			target, err := SafeRelativePath(workspace, grader["path"], name)
+			if err != nil {
+				return GradeResult{}, err
+			}
+			info, err := os.Stat(target)
+			expectation.Passed = err == nil && info.Mode().IsRegular()
+			if expectation.Passed {
+				expectation.Evidence = grader["path"].(string) + " exists"
+			} else {
+				expectation.Evidence = grader["path"].(string) + " is absent"
+			}
+		case "json_exact":
+			target, err := SafeRelativePath(workspace, grader["path"], name)
+			if err != nil {
+				return GradeResult{}, err
+			}
+			observed, readErr := readJSON(target)
+			expectation.Passed = readErr == nil && jsonEqual(observed, grader["expected"])
+			if expectation.Passed {
+				expectation.Evidence = grader["path"].(string) + " exactly matches expected JSON"
+			} else {
+				errorText := "none"
+				if readErr != nil {
+					errorText = readErr.Error()
+				}
+				expectation.Evidence = fmt.Sprintf("observed=%s; error=%s", pythonRepr(observed), errorText)
+			}
+		}
+		result.Expectations = append(result.Expectations, expectation)
+		if expectation.Passed {
+			result.Summary.Passed++
+		}
+	}
+	result.Summary.Total = len(result.Expectations)
+	result.Summary.Failed = result.Summary.Total - result.Summary.Passed
+	result.Summary.PassRate = float64(result.Summary.Passed) / float64(result.Summary.Total)
+	return result, nil
+}
+
+func responseEvidence(response string, grader map[string]any, passed bool) string {
+	switch grader["type"] {
+	case "response_contains":
+		needle := grader["value"].(string)
+		state := "not found"
+		if passed {
+			state = "found"
+		}
+		return fmt.Sprintf("%q %s in response", needle, state)
+	case "response_not_contains":
+		needle := grader["value"].(string)
+		state := "present"
+		if passed {
+			state = "absent"
+		}
+		return fmt.Sprintf("%q %s in response", needle, state)
+	case "response_regex":
+		pattern := grader["pattern"].(string)
+		match := regexp.MustCompile(pattern).FindString(response)
+		if passed {
+			return fmt.Sprintf("matched %q", match)
+		}
+		return fmt.Sprintf("pattern %q did not match", pattern)
+	case "markdown_table_column_regex":
+		pattern := grader["pattern"].(string)
+		column := grader["column"].(string)
+		text := markdownColumn(response, column)
+		match := regexp.MustCompile(pattern).FindString(text)
+		if passed {
+			return fmt.Sprintf("column %q matched %q", column, match)
+		}
+		return fmt.Sprintf("pattern %q did not match column %q; observed=%q", pattern, column, text)
+	}
+	return ""
+}
+
+func jsonEqual(left, right any) bool {
+	leftBytes, _ := canonicalJSON(left)
+	rightBytes, _ := canonicalJSON(right)
+	return bytes.Equal(leftBytes, rightBytes)
+}
+func pythonRepr(value any) string {
+	if value == nil {
+		return "None"
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Sprintf("%v", value)
+	}
+	return string(data)
+}
+
 func Load(skillPath, evalsPath string) (*Suite, error) {
 	resolvedSkill, err := filepath.Abs(skillPath)
 	if err != nil {

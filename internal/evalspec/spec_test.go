@@ -80,3 +80,41 @@ func TestCanonicalSHA256MatchesFrozenPython(t *testing.T) {
 		}
 	}
 }
+
+func TestGradeCaseCoversDeterministicWorkspaceAndExternalGraders(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "value.json"), []byte("{\"ok\":true}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	graders := []map[string]any{
+		{"name": "contains", "type": "response_contains", "value": "ok"},
+		{"name": "file", "type": "file_exists", "path": "value.json"},
+		{"name": "json", "type": "json_exact", "path": "value.json", "expected": map[string]any{"ok": true}},
+		{"name": "judge", "type": "model_rubric"},
+	}
+	result, err := GradeCase(workspace, "ok", graders, map[string]map[string]any{"judge": {"passed": true, "evidence": "specific"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Summary.Passed != 4 || result.Summary.PassRate != 1 {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
+func TestGradeCaseRejectsWorkspaceSymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("migration target is macOS/Linux")
+	}
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "secret"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := GradeCase(workspace, "", []map[string]any{{"name": "file", "type": "file_exists", "path": "escape/secret"}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("error=%v", err)
+	}
+}
