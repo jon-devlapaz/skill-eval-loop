@@ -60,6 +60,39 @@ func Run(runDir string) (map[string]any, error) {
 	if !ok || len(cases) == 0 {
 		return nil, fmt.Errorf("suite snapshot must contain cases")
 	}
+	if provenanceValue, ok := manifest["provenance_path"].(string); ok && provenanceValue != "" {
+		provenancePath, err := artifactPath(root, provenanceValue, "manifest.provenance_path")
+		if err != nil {
+			return nil, err
+		}
+		if err = requireFileHash(provenancePath, manifest["provenance_sha256"], "manifest.provenance_sha256 does not match snapshot"); err != nil {
+			return nil, err
+		}
+		snapshot, err := readObject(provenancePath)
+		if err != nil {
+			return nil, err
+		}
+		records, _ := snapshot["cases"].([]any)
+		for index, raw := range records {
+			record, ok := raw.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("provenance.cases[%d] must be an object", index+1)
+			}
+			label := fmt.Sprintf("provenance.cases[%d]", index+1)
+			retained, err := artifactPath(root, record["retained_artifact_path"], label+".retained_artifact_path")
+			if err != nil {
+				return nil, err
+			}
+			actual, err := fileHash(retained)
+			if err != nil {
+				return nil, err
+			}
+			expected, _ := record["retained_artifact_sha256"].(string)
+			if actual != expected {
+				return nil, fmt.Errorf("%s retained artifact hash does not match", label)
+			}
+		}
+	}
 	caseIDs := []string{}
 	accountingAvailable := true
 	modelRubricTotal := 0

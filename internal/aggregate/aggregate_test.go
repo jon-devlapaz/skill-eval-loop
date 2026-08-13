@@ -136,6 +136,24 @@ func TestAggregateRejectsInconsistentGradingSummaryAfterRehash(t *testing.T) {
 	}
 }
 
+func TestAggregateRetainedProvenanceMatchesPythonAndRejectsMutation(t *testing.T) {
+	run := retainedRun(t)
+	artifact := filepath.Join(run, "provenance", "case-one.json")
+	writeFile(t, artifact, []byte("{\"source\":true}\n"))
+	snapshotPath := filepath.Join(run, "provenance_snapshot.json")
+	writeJSON(t, snapshotPath, map[string]any{"schema_version": 1, "source_manifest_sha256": strings.Repeat("1", 64), "cases": []any{map[string]any{"case_id": "case-one", "retained_artifact_path": "provenance/case-one.json", "retained_artifact_sha256": testFileHash(t, artifact)}}})
+	mutateObject(t, filepath.Join(run, "run_manifest.json"), func(value map[string]any) {
+		value["provenance_path"] = "provenance_snapshot.json"
+		value["provenance_sha256"] = testFileHash(t, snapshotPath)
+	})
+	assertPythonParity(t, run)
+	writeFile(t, artifact, []byte("tampered\n"))
+	_, err := Run(run)
+	if err == nil || !strings.Contains(err.Error(), "retained artifact hash does not match") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func assertPythonParity(t *testing.T, run string) {
 	t.Helper()
 	goReport, err := Run(run)
