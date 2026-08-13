@@ -22,6 +22,7 @@ from eval_runtime import (
     start_eval_run,
 )
 from eval_spec import (
+    RESPONSE_SENSITIVE_GRADER_TYPES,
     canonical_sha256,
     grade_case,
     harness_invocation_counts,
@@ -244,14 +245,27 @@ def _validate_references(
             judge_timeout_seconds=judge_timeout_seconds,
             eval_run=eval_run,
         )
-        if (
-            counter_grading is not None
-            and not counter_grading["grading"]["summary"]["failed"]
-        ):
-            raise ValueError(
-                f"counter-reference passed graders for case {case['id']}; "
-                "the graders do not separate a correct answer from a wrong one"
-            )
+        if counter_grading is not None:
+            if suite["grader_discrimination"] == "case_contrast":
+                non_discriminating = [
+                    expectation["text"]
+                    for expectation in counter_grading["grading"]["expectations"]
+                    if expectation["grader"] in RESPONSE_SENSITIVE_GRADER_TYPES
+                    and expectation["passed"]
+                ]
+                if non_discriminating:
+                    raise ValueError(
+                        "counter-reference did not fail response-sensitive "
+                        "graders: "
+                        + ", ".join(non_discriminating)
+                        + f"; case {case['id']} does not prove grader "
+                        "discrimination"
+                    )
+            elif not counter_grading["grading"]["summary"]["failed"]:
+                raise ValueError(
+                    f"counter-reference passed graders for case {case['id']}; "
+                    "the graders do not separate a correct answer from a wrong one"
+                )
         record = {
             "case_id": case["id"],
             "valid": True,
@@ -645,6 +659,7 @@ def run_suite(
             "dataset_origin": suite["dataset_origin"],
             "tool_profile": suite["tool_profile"],
             "activation_mode": suite["activation_mode"],
+            "grader_discrimination": suite["grader_discrimination"],
             "distribution_policy": suite.get("distribution_policy"),
             "source_sha256": _sha256_file(Path(suite["source_path"])),
             "cases": [
@@ -657,6 +672,11 @@ def run_suite(
                         grader["type"] == "model_rubric"
                         for grader in case["graders"]
                     ),
+                    "response_sensitive_graders": [
+                        {"name": grader["name"], "type": grader["type"]}
+                        for grader in case["graders"]
+                        if grader["type"] in RESPONSE_SENSITIVE_GRADER_TYPES
+                    ],
                     "counter_reference_declared": (
                         case.get("counter_reference") is not None
                     ),

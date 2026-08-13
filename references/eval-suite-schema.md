@@ -17,6 +17,7 @@ each case to retained provenance.
   "dataset_origin": "author_derived",
   "tool_profile": "no_tools",
   "activation_mode": "forced",
+  "grader_discrimination": "case_contrast",
   "provenance_manifest": "provenance.json",
   "distribution_policy": {
     "minimum_pairs": 3,
@@ -41,26 +42,35 @@ Use:
 - `forced` to expand the target skill before the task, or `autonomous` to
   expose only its metadata and measure whether the model reads `SKILL.md`.
 
-Each case may declare an optional `counter_reference` beside `reference`:
+Each case may declare a `counter_reference` beside `reference`:
 
 ```json
 "reference": {"response": "a correct answer"},
 "counter_reference": {"response": "a plausible but wrong answer"}
 ```
 
-`reference` proves the graders accept a correct answer. `counter_reference`
-proves they reject a wrong one. Both are graded before any trial runs, and a
-counter-reference that passes stops the run: graders that accept everything
-report the same verdict for both conditions, so the paired comparison says
-nothing. A counter-reference is part of the case, so adding one changes the case
-hash and the provenance manifest needs re-registering.
+By itself, an optional counter is only an aggregate canary: it proves at least
+one grader rejects the wrong answer. A schema-version-3 suite may make the
+stronger claim with `"grader_discrimination": "case_contrast"`. Then every case
+with a response-sensitive grader must provide a counter, the static audit proves
+each deterministic response grader accepts the correct answer and rejects the
+wrong one, and each `model_rubric` must do the same through the selected judge
+harness before target trials. Aggregation checks the retained per-grader results
+again; one permissive grader cannot hide behind another grader's rejection.
 
-`counter_reference` must include a string `response` (empty objects are
-rejected). It is only valid when the case has at least one response-sensitive
-grader (`response_contains`, `response_not_contains`, `response_regex`,
-`markdown_table_column_regex`, or `model_rubric`). The canary grades the wrong
-response on the gold `reference` workspace, so `file_exists` / `json_exact`
-alone cannot discriminate and are rejected at load.
+Omitting `grader_discrimination` is equivalent to `"none"` and preserves the
+legacy aggregate canary. A counter-reference is part of the case, so adding or
+changing one changes the case hash and the provenance manifest needs
+re-registering.
+
+Under `case_contrast`, the correct and wrong responses must be non-empty and
+distinct. `counter_reference` is only valid when the case has at least one
+response-sensitive grader (`response_contains`, `response_not_contains`,
+`response_regex`, `markdown_table_column_regex`, or `model_rubric`). The
+contrast grades the wrong response on the gold `reference` workspace, so
+`file_exists` / `json_exact` alone cannot discriminate and are rejected at
+load. Schema version 2 keeps its optional counter for compatibility and cannot
+declare `case_contrast`.
 
 Every condition receives the same task, fixture, model, harness, and tool
 profile. The treatment additionally receives the selected harness's native
@@ -161,6 +171,7 @@ Use at least three meaningfully different cases, not paraphrases. Include a
 positive case and, where the skill has a real boundary, edge or negative cases.
 Prompts should resemble ordinary user requests and must not name the skill,
 quote its instructions, or expose its internal layout. Prefer deterministic,
-behavior-focused graders and references that pass those graders. Record newly
+behavior-focused graders and good/bad contrasts that every response grader
+distinguishes when the suite will support a grader-discrimination claim. Record newly
 invented cases honestly as `author_derived`; independence of the authoring
 subagent does not make a case statistically held out.

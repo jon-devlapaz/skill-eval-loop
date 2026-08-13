@@ -31,6 +31,9 @@ RESPONSE_SENSITIVE_GRADER_TYPES = frozenset(
         "model_rubric",
     }
 )
+DETERMINISTIC_RESPONSE_GRADER_TYPES = (
+    RESPONSE_SENSITIVE_GRADER_TYPES - {"model_rubric"}
+)
 SKILL_LOADING_POLICIES = {"required", "optional", "forbidden"}
 SUITE_TYPES = {"capability", "regression"}
 DATASET_ORIGINS = {"author_derived", "held_out", "production_regression"}
@@ -45,6 +48,7 @@ BEHAVIOR_CLASSES = {"positive", "edge", "negative"}
 ROUTING_CLASSES = {"should_trigger", "should_not_trigger", "ambiguous"}
 TOOL_PROFILES = {"no_tools", "read_only", "read_write", "coding"}
 ACTIVATION_MODES = {"forced", "autonomous"}
+GRADER_DISCRIMINATION_CLAIMS = {"none", "case_contrast"}
 
 
 def canonical_sha256(value: object) -> str:
@@ -311,6 +315,72 @@ def _validate_grader(grader: object, case_label: str, index: int) -> dict[str, A
     return normalized
 
 
+def _validate_response_contrast(
+    *,
+    case_label: str,
+    reference: dict[str, Any],
+    counter_reference: dict[str, Any],
+    graders: list[dict[str, Any]],
+) -> dict[str, int]:
+    """Validate the offline portion of one explicit good/bad contrast."""
+    reference_response = reference.get("response", "")
+    counter_response = counter_reference["response"]
+    if not reference_response.strip():
+        raise ValueError(
+            f"{case_label}.reference.response must be non-empty for a "
+            "grader contrast"
+        )
+    if not counter_response.strip():
+        raise ValueError(
+            f"{case_label}.counter_reference.response must be non-empty for "
+            "a grader contrast"
+        )
+    if reference_response.strip() == counter_response.strip():
+        raise ValueError(
+            f"{case_label}.counter_reference.response must differ from "
+            "reference.response for a grader contrast"
+        )
+
+    response_graders = [
+        grader
+        for grader in graders
+        if grader["type"] in RESPONSE_SENSITIVE_GRADER_TYPES
+    ]
+    deterministic_graders = [
+        grader
+        for grader in response_graders
+        if grader["type"] in DETERMINISTIC_RESPONSE_GRADER_TYPES
+    ]
+    for grader in deterministic_graders:
+        reference_grading = grade_case(
+            workspace=Path(),
+            response=reference_response,
+            graders=[grader],
+        )
+        if not reference_grading["expectations"][0]["passed"]:
+            raise ValueError(
+                f"{case_label} grader contrast reference does not pass "
+                f"grader {grader['name']!r}"
+            )
+        counter_grading = grade_case(
+            workspace=Path(),
+            response=counter_response,
+            graders=[grader],
+        )
+        if counter_grading["expectations"][0]["passed"]:
+            raise ValueError(
+                f"{case_label} grader contrast counter_reference does not "
+                f"fail grader {grader['name']!r}"
+            )
+    return {
+        "response_sensitive_grader_count": len(response_graders),
+        "deterministic_graders_checked": len(deterministic_graders),
+        "model_graders_pending_runtime": sum(
+            grader["type"] == "model_rubric" for grader in response_graders
+        ),
+    }
+
+
 def load_suite(skill_path: Path, evals_path: Path | None = None) -> dict[str, Any]:
     skill_path = skill_path.resolve()
     source = (evals_path or skill_path / "evals" / "evals.json").resolve()
@@ -339,6 +409,17 @@ def load_suite(skill_path: Path, evals_path: Path | None = None) -> dict[str, An
     if activation_mode == "autonomous" and schema_version != 3:
         raise ValueError(
             f"{source}.activation_mode=autonomous requires schema_version 3"
+        )
+    grader_discrimination = data.get("grader_discrimination", "none")
+    if grader_discrimination not in GRADER_DISCRIMINATION_CLAIMS:
+        raise ValueError(
+            f"{source}.grader_discrimination must be one of "
+            f"{sorted(GRADER_DISCRIMINATION_CLAIMS)}"
+        )
+    if grader_discrimination != "none" and schema_version != 3:
+        raise ValueError(
+            f"{source}.grader_discrimination={grader_discrimination} "
+            "requires schema_version 3"
         )
     if data.get("skill_name") != skill_path.name:
         raise ValueError(
@@ -425,6 +506,20 @@ def load_suite(skill_path: Path, evals_path: Path | None = None) -> dict[str, An
         grader_names = [grader["name"] for grader in normalized["graders"]]
         if len(grader_names) != len(set(grader_names)):
             raise ValueError(f"{label} has a duplicate grader name")
+        response_sensitive_graders = [
+            grader
+            for grader in normalized["graders"]
+            if grader["type"] in RESPONSE_SENSITIVE_GRADER_TYPES
+        ]
+        if (
+            grader_discrimination == "case_contrast"
+            and response_sensitive_graders
+            and counter_reference is None
+        ):
+            raise ValueError(
+                f"{label}.counter_reference is required when "
+                "grader_discrimination=case_contrast"
+            )
         if counter_reference is not None and not any(
             grader["type"] in RESPONSE_SENSITIVE_GRADER_TYPES
             for grader in normalized["graders"]
@@ -436,6 +531,23 @@ def load_suite(skill_path: Path, evals_path: Path | None = None) -> dict[str, An
                 "file_exists/json_exact alone cannot discriminate a wrong "
                 "response on the gold reference workspace"
             )
+        normalized["grader_discrimination"] = (
+            _validate_response_contrast(
+                case_label=label,
+                reference=reference,
+                counter_reference=counter_reference,
+                graders=normalized["graders"],
+            )
+            if counter_reference is not None
+            and grader_discrimination == "case_contrast"
+            else {
+                "response_sensitive_grader_count": len(
+                    response_sensitive_graders
+                ),
+                "deterministic_graders_checked": 0,
+                "model_graders_pending_runtime": 0,
+            }
+        )
         if schema_version == 2:
             for grader_index, grader in enumerate(
                 normalized["graders"],
@@ -495,6 +607,14 @@ def load_suite(skill_path: Path, evals_path: Path | None = None) -> dict[str, An
                     + "\n- ".join(requirements)
                 )
         normalized_cases.append(normalized)
+    if grader_discrimination == "case_contrast" and not any(
+        case["grader_discrimination"]["response_sensitive_grader_count"]
+        for case in normalized_cases
+    ):
+        raise ValueError(
+            f"{source} grader contrast requires at least one "
+            "response-sensitive grader"
+        )
     suite_root = source.parent if schema_version == 3 else skill_path
     distribution_policy = None
     provenance_records: dict[str, Any] = {}
@@ -520,6 +640,7 @@ def load_suite(skill_path: Path, evals_path: Path | None = None) -> dict[str, An
     return {
         **data,
         "activation_mode": activation_mode,
+        "grader_discrimination": grader_discrimination,
         "source_path": str(source),
         "suite_root": str(suite_root),
         "distribution_policy": distribution_policy,

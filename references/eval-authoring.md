@@ -45,8 +45,10 @@ Require all of the following:
 - deterministic final-state graders where feasible, with unique behavioral
   names; use model rubrics only for qualities that cannot be checked
   deterministically;
-- minimal fixtures and references that pass every declared grader without
-  depending on the candidate run;
+- minimal fixtures and references that pass every declared grader; for a
+  release-grade discrimination claim, declare schema-3 `case_contrast` and
+  provide a good/bad response pair that every response-sensitive grader
+  distinguishes without depending on the candidate run;
 - honest provenance: use `author_derived` and `author_scenario` for newly
   invented cases, never label them `held_out` or `production_regression`;
 - one retained source artifact and valid suite, case, and artifact hashes for

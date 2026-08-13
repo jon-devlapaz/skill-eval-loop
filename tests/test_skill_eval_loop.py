@@ -500,6 +500,7 @@ def _make_schema3_skill(root: Path, *, tamper: bool = False) -> Path:
             }
         ],
         "reference": {"response": "done"},
+        "counter_reference": {"response": "wrong"},
     }
     suite = {
         "schema_version": 3,
@@ -507,6 +508,7 @@ def _make_schema3_skill(root: Path, *, tamper: bool = False) -> Path:
         "suite_type": "regression",
         "dataset_origin": "author_derived",
         "tool_profile": "no_tools",
+        "grader_discrimination": "case_contrast",
         "provenance_manifest": "provenance.json",
         "distribution_policy": {
             "minimum_pairs": 3,
@@ -547,6 +549,97 @@ class SuiteAuditTests(unittest.TestCase):
             report = audit(_make_schema3_skill(Path(temp)))
             self.assertTrue(report["valid"])
             self.assertEqual(report["provenance_case_count"], 1)
+            self.assertEqual(
+                report["grader_discrimination"],
+                {
+                    "claim": "case_contrast",
+                    "contrast_case_count": 1,
+                    "response_sensitive_grader_count": 1,
+                    "deterministic_graders_checked": 1,
+                    "model_graders_pending_runtime": 0,
+                },
+            )
+
+    def test_missing_schema_three_contrast_fails_with_actionable_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema3_skill(Path(temp))
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0].pop("counter_reference")
+            _write_json(suite_path, suite)
+            report = audit(skill)
+            self.assertFalse(report["valid"])
+            self.assertEqual(report["errors"], ["missing_grader_contrast"])
+
+    def test_non_discriminating_contrast_fails_with_actionable_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema3_skill(Path(temp))
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["counter_reference"] = {"response": "done"}
+            _write_json(suite_path, suite)
+            report = audit(skill)
+            self.assertFalse(report["valid"])
+            self.assertEqual(
+                report["errors"],
+                ["non_discriminating_grader_contrast"],
+            )
+
+    def test_contrast_claim_with_only_workspace_graders_fails_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema3_skill(Path(temp))
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["graders"] = [
+                {
+                    "name": "Creates the result",
+                    "type": "file_exists",
+                    "path": "result.json",
+                }
+            ]
+            suite["evals"][0].pop("counter_reference")
+            _write_json(suite_path, suite)
+            report = audit(skill)
+            self.assertFalse(report["valid"])
+            self.assertEqual(
+                report["errors"],
+                ["non_discriminating_grader_contrast"],
+            )
+            self.assertIn(
+                "requires at least one response-sensitive grader",
+                report["details"][0],
+            )
+
+    def test_malformed_contrast_fails_with_actionable_code(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema3_skill(Path(temp))
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["counter_reference"] = {"response": 7}
+            _write_json(suite_path, suite)
+            report = audit(skill)
+            self.assertFalse(report["valid"])
+            self.assertEqual(report["errors"], ["invalid_grader_contrast"])
+            self.assertIn("must be a string", report["details"][0])
+
+    def test_schema_three_without_a_discrimination_claim_remains_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            skill = _make_schema3_skill(Path(temp))
+            suite_path = skill / "evals" / "evals.json"
+            provenance_path = skill / "evals" / "provenance.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite.pop("grader_discrimination")
+            _write_json(suite_path, suite)
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            provenance["suite_sha256"] = canonical_sha256(suite)
+            _write_json(provenance_path, provenance)
+            report = audit(skill)
+            self.assertTrue(report["valid"])
+            self.assertEqual(report["grader_discrimination"]["claim"], "none")
+            self.assertEqual(
+                report["grader_discrimination"]["contrast_case_count"],
+                0,
+            )
 
     def test_tampered_provenance_fails_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -682,7 +775,15 @@ print(json.dumps({
                 },
             )
             self.assertEqual(snapshot["cases"][0]["model_rubric_count"], 0)
-            self.assertFalse(snapshot["cases"][0]["counter_reference_declared"])
+            self.assertEqual(
+                snapshot["cases"][0]["response_sensitive_graders"],
+                [{"name": "Returns done", "type": "response_contains"}],
+            )
+            self.assertTrue(snapshot["cases"][0]["counter_reference_declared"])
+            self.assertEqual(
+                report["grader_discrimination"],
+                {"claim": "case_contrast", "validated": True},
+            )
             policy_notes = [
                 line for line in report["limits"] if "distribution_policy" in line
             ]
@@ -739,23 +840,66 @@ class CounterReferenceTests(unittest.TestCase):
             skill = self._skill_with_counter(root, "this answer is wrong")
             self.assertTrue(self._validate(skill, root / "out"))
 
-    def test_a_counter_reference_that_passes_stops_the_run(self) -> None:
+    def test_a_model_grader_that_accepts_the_counter_stops_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            skill = self._skill_with_counter(root, "done")
-            with self.assertRaisesRegex(ValueError, "counter-reference passed graders"):
+            skill = self._skill_with_counter(root, "this answer is wrong")
+            suite_path = skill / "evals" / "evals.json"
+            provenance_path = skill / "evals" / "provenance.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0]["graders"].append(
+                {
+                    "name": "Judge",
+                    "type": "model_rubric",
+                    "rubric": "done",
+                    "criteria": [
+                        {
+                            "requirement": "Returns done",
+                            "prompt_quote": "Return done.",
+                        }
+                    ],
+                }
+            )
+            _write_json(suite_path, suite)
+            provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+            provenance["suite_sha256"] = canonical_sha256(suite)
+            provenance["cases"][0]["case_sha256"] = canonical_sha256(
+                suite["evals"][0]
+            )
+            _write_json(provenance_path, provenance)
+            passing_grade = {"Judge": {"passed": True, "evidence": "fixture"}}
+            with (
+                patch(
+                    "run_skill_eval._model_graders",
+                    return_value=(passing_grade, []),
+                ),
+                self.assertRaisesRegex(
+                    ValueError,
+                    "counter-reference did not fail response-sensitive graders: Judge",
+                ),
+            ):
                 self._validate(skill, root / "out")
 
-    def test_a_suite_without_a_counter_reference_is_unaffected(self) -> None:
+    def test_schema_three_response_graders_require_a_counter_reference(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             skill = _make_schema3_skill(root)
-            self.assertTrue(self._validate(skill, root / "out"))
+            suite_path = skill / "evals" / "evals.json"
+            suite = json.loads(suite_path.read_text(encoding="utf-8"))
+            suite["evals"][0].pop("counter_reference")
+            _write_json(suite_path, suite)
+            with self.assertRaisesRegex(ValueError, "counter_reference is required"):
+                load_suite(skill)
+
+    def test_schema_two_without_a_counter_reference_remains_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            skill = _make_schema2_skill(root)
             case = load_suite(skill)["evals"][0]
             self.assertIsNone(
                 _grade_counter_reference(
                     case=case,
-                    suite_root=skill / "evals",
+                    suite_root=skill,
                     output_dir=root / "out",
                     harness="pi",
                     executable="unused",
@@ -788,9 +932,19 @@ class CounterReferenceTests(unittest.TestCase):
             provenance["suite_sha256"] = canonical_sha256(suite)
             provenance["cases"][0]["case_sha256"] = canonical_sha256(suite["evals"][0])
             _write_json(provenance_path, provenance)
-            graders.return_value = (
-                {"Judge": {"passed": True, "evidence": "fixture"}},
-                [{"actual_model": "provider/judge-1", "trace_path": "judge.jsonl"}],
+            judge_record = {
+                "actual_model": "provider/judge-1",
+                "trace_path": "judge.jsonl",
+            }
+            graders.side_effect = (
+                (
+                    {"Judge": {"passed": True, "evidence": "fixture"}},
+                    [judge_record],
+                ),
+                (
+                    {"Judge": {"passed": False, "evidence": "fixture"}},
+                    [judge_record],
+                ),
             )
             records = self._validate(skill, root / "out")
             self.assertEqual(
@@ -2881,6 +3035,22 @@ class AggregateTests(unittest.TestCase):
         manifest["reference_validation"] = [reference]
         _write_json(manifest_path, manifest)
 
+    def test_undeclared_grader_discrimination_remains_unproven(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_run(root, [(False, True)])
+            report = aggregate(root)
+            self.assertEqual(
+                report["grader_discrimination"],
+                {"claim": "none", "validated": False},
+            )
+            self.assertTrue(
+                any(
+                    "optional counters do not prove every" in limit
+                    for limit in report["limits"]
+                )
+            )
+
     def test_no_judge_calls_have_zero_usage_only_when_zero_are_expected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -2992,6 +3162,155 @@ class AggregateTests(unittest.TestCase):
             )
             _write_json(manifest_path, manifest)
             with self.assertRaisesRegex(ValueError, "counter_reference passed"):
+                aggregate(root)
+
+    def test_counter_reference_must_fail_every_response_grader(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_run(root, [(False, True)])
+            self._accounting_snapshot(root, graders=0, counter=True)
+            snapshot_path = root / "suite_snapshot.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["grader_discrimination"] = "case_contrast"
+            snapshot["cases"][0]["response_sensitive_graders"] = [
+                {"name": "Rejects the bad structure", "type": "response_regex"},
+                {
+                    "name": "Judge rejects the bad answer",
+                    "type": "response_contains",
+                },
+            ]
+            _write_json(snapshot_path, snapshot)
+            manifest_path = root / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["suite_sha256"] = _sha256(snapshot_path)
+            manifest["reference_validation"][0]["grading"] = {
+                "grader": {"kind": "deterministic_mixed", "schema_version": 2},
+                "expectations": [
+                    {
+                        "text": "Rejects the bad structure",
+                        "passed": True,
+                        "evidence": "fixture",
+                        "grader": "response_regex",
+                    },
+                    {
+                        "text": "Judge rejects the bad answer",
+                        "passed": True,
+                        "evidence": "fixture",
+                        "grader": "response_contains",
+                    },
+                ],
+                "summary": {
+                    "passed": 2,
+                    "failed": 0,
+                    "total": 2,
+                    "pass_rate": 1.0,
+                },
+            }
+            manifest["reference_validation"][0]["counter_reference"][
+                "grading"
+            ] = {
+                "grader": {"kind": "deterministic_mixed", "schema_version": 2},
+                "expectations": [
+                    {
+                        "text": "Rejects the bad structure",
+                        "passed": False,
+                        "evidence": "fixture",
+                        "grader": "response_regex",
+                    },
+                    {
+                        "text": "Judge rejects the bad answer",
+                        "passed": True,
+                        "evidence": "fixture",
+                        "grader": "response_contains",
+                    },
+                ],
+                "summary": {
+                    "passed": 1,
+                    "failed": 1,
+                    "total": 2,
+                    "pass_rate": 0.5,
+                },
+            }
+            _write_json(manifest_path, manifest)
+            with self.assertRaisesRegex(
+                ValueError,
+                "counter_reference did not fail response-sensitive graders: "
+                "Judge rejects the bad answer",
+            ):
+                aggregate(root)
+
+    def test_case_contrast_requires_complete_snapshot_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_run(root, [(False, True)])
+            self._accounting_snapshot(root, graders=0, counter=True)
+            snapshot_path = root / "suite_snapshot.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["grader_discrimination"] = "case_contrast"
+            _write_json(snapshot_path, snapshot)
+            manifest_path = root / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["suite_sha256"] = _sha256(snapshot_path)
+            _write_json(manifest_path, manifest)
+            with self.assertRaisesRegex(
+                ValueError,
+                "response_sensitive_graders must be a list",
+            ):
+                aggregate(root)
+
+    def test_case_contrast_requires_a_counter_for_response_graders(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_run(root, [(False, True)])
+            self._accounting_snapshot(root, graders=0, counter=False)
+            snapshot_path = root / "suite_snapshot.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["grader_discrimination"] = "case_contrast"
+            snapshot["cases"][0]["response_sensitive_graders"] = [
+                {"name": "Completes the task", "type": "response_contains"}
+            ]
+            _write_json(snapshot_path, snapshot)
+            manifest_path = root / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["suite_sha256"] = _sha256(snapshot_path)
+            _write_json(manifest_path, manifest)
+            with self.assertRaisesRegex(
+                ValueError,
+                "counter_reference_declared must match response-sensitive graders",
+            ):
+                aggregate(root)
+
+    def test_case_contrast_revalidates_each_named_grader(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            _make_run(root, [(False, True)])
+            self._accounting_snapshot(root, graders=0, counter=True)
+            snapshot_path = root / "suite_snapshot.json"
+            snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            snapshot["grader_discrimination"] = "case_contrast"
+            snapshot["cases"][0]["response_sensitive_graders"] = [
+                {"name": "Completes the task", "type": "response_contains"}
+            ]
+            _write_json(snapshot_path, snapshot)
+            manifest_path = root / "run_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["suite_sha256"] = _sha256(snapshot_path)
+            _write_json(manifest_path, manifest)
+            report = aggregate(root)
+            self.assertEqual(
+                report["grader_discrimination"],
+                {"claim": "case_contrast", "validated": True},
+            )
+
+            manifest["reference_validation"][0]["counter_reference"]["grading"][
+                "expectations"
+            ][0]["grader"] = "response_regex"
+            _write_json(manifest_path, manifest)
+            with self.assertRaisesRegex(
+                ValueError,
+                "counter_reference.grading does not retain the declared "
+                "response-sensitive grader outcomes",
+            ):
                 aggregate(root)
 
     def test_partial_accounting_metadata_is_rejected(self) -> None:

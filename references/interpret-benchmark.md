@@ -17,6 +17,9 @@ run. Report only local paired evidence.
 - `task_success.delta` — treatment rate minus control rate.
 - `selection_verdict` and `routing.accuracy` — trace-visible access only, for
   autonomous schema-3 suites.
+- `grader_discrimination` — `case_contrast` is validated only when every
+  response-sensitive grader accepted the declared good response and rejected
+  the bad one; `none` means optional counters were only aggregate canaries.
 - `routing` — treatment availability, trace-visible injection, explicit access,
   selection errors, and control exposure.
 - `operations.without_skill` and `operations.with_skill` — target-condition

@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 
-from eval_spec import harness_invocation_counts
+from eval_spec import RESPONSE_SENSITIVE_GRADER_TYPES, harness_invocation_counts
 from runtime_adapters import (
     HARNESS_NAMES,
     model_matches,
@@ -123,6 +123,48 @@ def _load_grading(path: Path, label: str) -> tuple[dict, bool]:
         json.loads(path.read_text(encoding="utf-8")),
         label,
     )
+
+
+def _validate_response_grader_outcomes(
+    grading: dict,
+    *,
+    expected: dict[str, str],
+    expected_passed: bool,
+    label: str,
+) -> None:
+    observed = {
+        (expectation.get("text"), expectation.get("grader"))
+        for expectation in grading["expectations"]
+        if expectation.get("grader") in RESPONSE_SENSITIVE_GRADER_TYPES
+    }
+    declared = set(expected.items())
+    if observed != declared:
+        raise ValueError(
+            f"{label} does not retain the declared response-sensitive "
+            "grader outcomes"
+        )
+    wrong_verdicts = [
+        name
+        for name in expected
+        if next(
+            expectation
+            for expectation in grading["expectations"]
+            if expectation.get("text") == name
+        )["passed"]
+        is not expected_passed
+    ]
+    if wrong_verdicts:
+        if expected_passed:
+            raise ValueError(
+                f"{label} must pass every declared response-sensitive "
+                "grader: "
+                + ", ".join(wrong_verdicts)
+            )
+        raise ValueError(
+            f"{label} counter_reference did not fail response-sensitive "
+            "graders: "
+            + ", ".join(wrong_verdicts)
+        )
 
 
 def _judge_identity_valid(
@@ -316,6 +358,9 @@ def aggregate(run_dir: Path) -> dict:
     if _sha256_file(suite_path) != manifest.get("suite_sha256"):
         raise ValueError("manifest.suite_sha256 does not match suite snapshot")
     suite_snapshot = json.loads(suite_path.read_text(encoding="utf-8"))
+    grader_discrimination = suite_snapshot.get("grader_discrimination", "none")
+    if grader_discrimination not in {"none", "case_contrast"}:
+        raise ValueError("suite snapshot grader_discrimination is invalid")
     cases = suite_snapshot.get("cases")
     if not isinstance(cases, list) or not cases:
         raise ValueError("suite snapshot must contain cases")
@@ -345,6 +390,55 @@ def aggregate(run_dir: Path) -> dict:
             "suite snapshot accounting metadata must be complete and valid for every case"
         )
     accounting_available = all(accounting_fields_valid)
+    response_graders_by_case: dict[str, dict[str, str]] = {}
+    if grader_discrimination == "case_contrast":
+        if not accounting_available:
+            raise ValueError(
+                "case_contrast requires complete per-case accounting metadata"
+            )
+        for case_index, case in enumerate(cases, start=1):
+            label = f"suite snapshot cases[{case_index}]"
+            declared_graders = case.get("response_sensitive_graders")
+            if not isinstance(declared_graders, list):
+                raise ValueError(
+                    f"{label}.response_sensitive_graders must be a list"
+                )
+            by_name: dict[str, str] = {}
+            for grader_index, grader in enumerate(declared_graders, start=1):
+                grader_label = (
+                    f"{label}.response_sensitive_graders[{grader_index}]"
+                )
+                if not isinstance(grader, dict):
+                    raise ValueError(f"{grader_label} must be an object")
+                name = grader.get("name")
+                grader_type = grader.get("type")
+                if not isinstance(name, str) or not name or name in by_name:
+                    raise ValueError(
+                        f"{grader_label}.name is missing or duplicate"
+                    )
+                if grader_type not in RESPONSE_SENSITIVE_GRADER_TYPES:
+                    raise ValueError(
+                        f"{grader_label}.type is not response-sensitive"
+                    )
+                by_name[name] = grader_type
+            if sum(
+                grader_type == "model_rubric"
+                for grader_type in by_name.values()
+            ) != case["model_rubric_count"]:
+                raise ValueError(
+                    f"{label}.response_sensitive_graders does not match "
+                    "model_rubric_count"
+                )
+            if case["counter_reference_declared"] != bool(by_name):
+                raise ValueError(
+                    f"{label}.counter_reference_declared must match "
+                    "response-sensitive graders"
+                )
+            response_graders_by_case[str(case["id"])] = by_name
+        if not any(response_graders_by_case.values()):
+            raise ValueError(
+                "case_contrast requires at least one response-sensitive grader"
+            )
     trials_per_case = manifest.get("trials_per_case")
     if type(trials_per_case) is not int or trials_per_case < 1:
         raise ValueError("manifest.trials_per_case must be a positive integer")
@@ -433,6 +527,16 @@ def aggregate(run_dir: Path) -> dict:
                     f"manifest.reference_validation[{ref_index}].grading "
                     "does not pass all graders"
                 )
+            if grader_discrimination == "case_contrast":
+                reference_grading = reference["grading"]
+                _validate_response_grader_outcomes(
+                    reference_grading,
+                    expected=response_graders_by_case[reference_case_id],
+                    expected_passed=True,
+                    label=(
+                        f"manifest.reference_validation[{ref_index}].grading"
+                    ),
+                )
         if counter is not None:
             if not isinstance(counter, dict):
                 raise ValueError(
@@ -443,7 +547,7 @@ def aggregate(run_dir: Path) -> dict:
                 ("counter_reference.judge_records", counter_reference_judges),
             )
             if accounting_available:
-                _, counter_passed = _validate_grading(
+                counter_grading, counter_passed = _validate_grading(
                     counter.get("grading"),
                     f"manifest.reference_validation[{ref_index}]"
                     ".counter_reference.grading",
@@ -452,6 +556,16 @@ def aggregate(run_dir: Path) -> dict:
                     raise ValueError(
                         f"manifest.reference_validation[{ref_index}]"
                         ".counter_reference passed all graders"
+                    )
+                if grader_discrimination == "case_contrast":
+                    _validate_response_grader_outcomes(
+                        counter_grading,
+                        expected=response_graders_by_case[reference_case_id],
+                        expected_passed=False,
+                        label=(
+                            f"manifest.reference_validation[{ref_index}]"
+                            ".counter_reference.grading"
+                        ),
                     )
         for key, retained in judge_groups:
             records = (
@@ -778,6 +892,10 @@ def aggregate(run_dir: Path) -> dict:
         "mechanism_valid": mechanism_valid,
         "runtime_attestation_complete": not runtime_attestation_gaps,
         "activation_mode": activation_mode,
+        "grader_discrimination": {
+            "claim": grader_discrimination,
+            "validated": grader_discrimination == "case_contrast",
+        },
         "selection_verdict": (
             "passed"
             if routing_accuracy == 1.0
@@ -812,6 +930,15 @@ def aggregate(run_dir: Path) -> dict:
         "operations": operations,
         "limits": [
             "This is a local paired diagnostic, not a distribution or significance claim.",
+            *(
+                [
+                    "The suite did not declare grader_discrimination=case_contrast; "
+                    "optional counters do not prove every response-sensitive grader "
+                    "distinguishes a known good/bad pair."
+                ]
+                if grader_discrimination == "none"
+                else []
+            ),
             *(
                 [
                     "distribution_policy was declared by the suite and not applied to this "

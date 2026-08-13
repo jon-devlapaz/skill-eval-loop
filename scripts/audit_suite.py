@@ -12,6 +12,9 @@ from eval_spec import load_suite
 
 def _error_code(message: str) -> str:
     rules = (
+        ("counter_reference is required", "missing_grader_contrast"),
+        ("grader contrast", "non_discriminating_grader_contrast"),
+        ("counter_reference", "invalid_grader_contrast"),
         ("artifact_sha256 does not match artifact", "provenance_hash_mismatch"),
         ("case_sha256 does not match eval case", "provenance_case_mismatch"),
         ("suite_sha256 does not match eval suite", "provenance_suite_mismatch"),
@@ -32,9 +35,11 @@ def audit(skill_path: Path, evals_path: Path | None = None) -> dict:
     try:
         suite = load_suite(skill_path, evals_path)
     except (OSError, ValueError, KeyError, json.JSONDecodeError) as exc:
+        message = str(exc)
         return {
             "valid": False,
-            "errors": [_error_code(str(exc))],
+            "errors": [_error_code(message)],
+            "details": [message],
         }
     routing_classes = sorted(
         {
@@ -43,6 +48,30 @@ def audit(skill_path: Path, evals_path: Path | None = None) -> dict:
             if case.get("routing_class")
         }
     )
+    discrimination = {
+        "claim": suite["grader_discrimination"],
+        "contrast_case_count": sum(
+            suite["grader_discrimination"] == "case_contrast"
+            and case.get("counter_reference") is not None
+            and case["grader_discrimination"][
+                "response_sensitive_grader_count"
+            ]
+            > 0
+            for case in suite["evals"]
+        ),
+        "response_sensitive_grader_count": sum(
+            case["grader_discrimination"]["response_sensitive_grader_count"]
+            for case in suite["evals"]
+        ),
+        "deterministic_graders_checked": sum(
+            case["grader_discrimination"]["deterministic_graders_checked"]
+            for case in suite["evals"]
+        ),
+        "model_graders_pending_runtime": sum(
+            case["grader_discrimination"]["model_graders_pending_runtime"]
+            for case in suite["evals"]
+        ),
+    }
     return {
         "valid": True,
         "errors": [],
@@ -53,6 +82,7 @@ def audit(skill_path: Path, evals_path: Path | None = None) -> dict:
         "activation_mode": suite["activation_mode"],
         "case_count": len(suite["evals"]),
         "routing_classes": routing_classes,
+        "grader_discrimination": discrimination,
         "distribution_policy": suite.get("distribution_policy"),
         "provenance_case_count": len(suite.get("provenance_records", {})),
     }
