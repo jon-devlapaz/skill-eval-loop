@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -35,9 +36,6 @@ type Input struct {
 func Run(ctx context.Context, input Input) (map[string]any, error) {
 	if input.Plan.Harness != "pi" && input.Plan.Harness != "claude-code" && input.Plan.Harness != "hermes" && input.Plan.Harness != "codex" {
 		return nil, errors.New("unsupported run harness")
-	}
-	if input.JudgeModel != "" {
-		return nil, errors.New("model-rubric execution is not implemented yet")
 	}
 	if _, err := os.Stat(input.Plan.OutputDir); err == nil {
 		return nil, fmt.Errorf("%s already exists; choose a new output", input.Plan.OutputDir)
@@ -63,7 +61,7 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 		return nil, runErr
 	}
 
-	references, err := validateReferences(suite)
+	references, err := validateReferences(ctx, input, suite)
 	if err != nil {
 		return fail(err)
 	}
@@ -118,7 +116,7 @@ func Run(ctx context.Context, input Input) (map[string]any, error) {
 		ConditionVariable: input.Plan.Harness + " explicit skill activation versus isolated control",
 		SkillSHA256:       skillHash, SuitePath: "suite_snapshot.json", SuiteSHA256: suiteHash,
 		ProvenancePath: nil, ProvenanceSHA256: nil, RequestedModel: input.Plan.Model,
-		JudgeModel: nil, Harness: input.Plan.Harness, HarnessVersion: input.Plan.HarnessVersion,
+		JudgeModel: optionalString(input.JudgeModel), Harness: input.Plan.Harness, HarnessVersion: input.Plan.HarnessVersion,
 		Observer: "headless", ToolProfile: suite.ToolProfile, ActivationMode: suite.ActivationMode,
 		ExecutionOrder: "counterbalanced_by_trial", ExecutionSchedule: schedule,
 		CaseCount: len(suite.Cases), TrialsPerCase: input.Plan.TrialsPerCase, PairCount: len(pairs),
@@ -154,6 +152,9 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 	conditionDir := filepath.Join(input.Plan.OutputDir, "eval-"+current.ID, fmt.Sprintf("trial-%03d", trial), condition)
 	workspace := filepath.Join(conditionDir, "workspace")
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		return conditionRecord{}, err
+	}
+	if err := prepareCaseWorkspace(suite, current, workspace, false); err != nil {
 		return conditionRecord{}, err
 	}
 	installed := ""
@@ -249,7 +250,11 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 	if err := os.WriteFile(responsePath, responseBytes, 0o666); err != nil {
 		return conditionRecord{}, err
 	}
-	grading, err := evalspec.GradeCase(workspace, metadata.FinalResponse, current.Graders, nil)
+	external, judgeRecords, err := modelGrades(ctx, input, current, metadata.FinalResponse, filepath.Join(outputs, "judges"), fmt.Sprintf("%s · %s · trial %d", condition, current.ID, trial))
+	if err != nil {
+		return conditionRecord{}, err
+	}
+	grading, err := evalspec.GradeCase(workspace, metadata.FinalResponse, current.Graders, external)
 	if err != nil {
 		return conditionRecord{}, err
 	}
@@ -296,7 +301,7 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 		RequestedTools: tools, ToolEnforcement: toolEnforcement, InstalledSkillPath: filepath.ToSlash(relativeInstalled),
 		SkillInjectionAttested: metadata.SkillInjectionAttested, SkillExplicitlyAccessed: metadata.SkillExplicitlyAccessed,
 		ExpectedSkillLoading: map[bool]string{true: current.ExpectedSkillLoading, false: "forbidden"}[condition == "with_skill"],
-		JudgeRecords:         []any{}, TracePath: filepath.ToSlash(traceRelative), TraceSHA256: traceHash,
+		JudgeRecords:         judgeRecords, TracePath: filepath.ToSlash(traceRelative), TraceSHA256: traceHash,
 		AttestationTracePath: filepath.ToSlash(attestationRelative), AttestationTraceSHA256: attestationHash,
 		ResponsePath: filepath.ToSlash(responseRelative), ResponseSHA256: responseHash,
 		GradingPath: filepath.ToSlash(gradingRelative), GradingSHA256: gradingHash,
@@ -378,6 +383,59 @@ func targetInvocation(plan runplan.Plan, suite *evalspec.Suite, tools []string, 
 		argv = append(argv, "--skill", installed)
 	}
 	return append(argv, prompt), nil, nil
+}
+
+func judgeInvocation(plan runplan.Plan, tracePath, prompt string) ([]string, []string, error) {
+	runDir := filepath.Dir(tracePath)
+	judgeModel, _ := plan.JudgeModel.(string)
+	switch plan.Harness {
+	case "pi":
+		return []string{plan.HarnessPath, "--print", "--mode", "json", "--no-session", "--no-skills", "--no-extensions", "--no-prompt-templates", "--no-context-files", "--no-tools", "--model", judgeModel, prompt}, nil, nil
+	case "claude-code":
+		return []string{plan.HarnessPath, "-p", "--output-format", "stream-json", "--verbose", "--model", judgeModel, "--no-session-persistence", "--safe-mode", "--strict-mcp-config", "--tools", "", prompt}, nil, nil
+	case "codex":
+		home := filepath.Join(runDir, "harness-home")
+		codexHome := filepath.Join(runDir, "codex-home")
+		if err := os.MkdirAll(home, 0o755); err != nil {
+			return nil, nil, err
+		}
+		if err := os.MkdirAll(codexHome, 0o755); err != nil {
+			return nil, nil, err
+		}
+		if err := linkCodexAuth(codexHome); err != nil {
+			return nil, nil, err
+		}
+		return []string{plan.HarnessPath, "exec", "--json", "--skip-git-repo-check", "--ignore-user-config", "--ignore-rules", "--sandbox", "read-only", "--model", judgeModel, prompt}, environmentWithValues(map[string]string{"HOME": home, "CODEX_HOME": codexHome}), nil
+	case "hermes":
+		configPath := filepath.Join(runDir, "hermes-config.yaml")
+		config := "{\"platform_toolsets\": {\"cli\": [\"file\"]}, \"agent\": {\"disabled_toolsets\": [\"file\"]}, \"skills\": {\"external_dirs\": []}}\n"
+		if err := os.WriteFile(configPath, []byte(config), 0o666); err != nil {
+			return nil, nil, err
+		}
+		usagePath := filepath.Join(runDir, "usage.json")
+		return []string{plan.HarnessPath, "-z", prompt, "--model", judgeModel, "--usage-file", usagePath}, environmentWithValues(map[string]string{"HERMES_CONFIG": configPath, "HERMES_IGNORE_RULES": "1", "HERMES_IGNORE_USER_CONFIG": "1"}), nil
+	default:
+		return nil, nil, errors.New("unsupported judge harness")
+	}
+}
+
+func linkCodexAuth(codexHome string) error {
+	sourceHome := os.Getenv("CODEX_HOME")
+	if sourceHome == "" {
+		userHome, err := os.UserHomeDir()
+		if err != nil {
+			return err
+		}
+		sourceHome = filepath.Join(userHome, ".codex")
+	}
+	authSource := filepath.Join(sourceHome, "auth.json")
+	authTarget := filepath.Join(codexHome, "auth.json")
+	if info, err := os.Stat(authSource); err == nil && info.Mode().IsRegular() {
+		if err := os.Symlink(authSource, authTarget); err != nil && !os.IsExist(err) {
+			return err
+		}
+	}
+	return nil
 }
 
 func environmentWith(key, value string) []string {
@@ -595,20 +653,180 @@ func visitAssistant(value any, metadata *traceMetadata, models map[string]bool) 
 	}
 }
 
-func validateReferences(suite *evalspec.Suite) ([]referenceRecord, error) {
+func validateReferences(ctx context.Context, input Input, suite *evalspec.Suite) ([]referenceRecord, error) {
 	records := []referenceRecord{}
 	for _, current := range suite.Cases {
+		workspace, err := os.MkdirTemp("", "skill-eval-reference-")
+		if err != nil {
+			return nil, err
+		}
+		if err := prepareCaseWorkspace(suite, current, workspace, true); err != nil {
+			os.RemoveAll(workspace)
+			return nil, err
+		}
 		response, _ := current.Reference["response"].(string)
-		grading, err := evalspec.GradeCase(suite.SuiteRoot, response, current.Graders, nil)
+		external, judges, err := modelGrades(ctx, input, current, response, filepath.Join(input.Plan.OutputDir, "reference-judges", current.ID), "reference · "+current.ID)
+		if err != nil {
+			os.RemoveAll(workspace)
+			return nil, err
+		}
+		grading, err := evalspec.GradeCase(workspace, response, current.Graders, external)
+		os.RemoveAll(workspace)
 		if err != nil {
 			return nil, err
 		}
 		if grading.Summary.Failed > 0 {
 			return nil, fmt.Errorf("reference solution failed graders for case %s", current.ID)
 		}
-		records = append(records, referenceRecord{CaseID: current.ID, Valid: true, Grading: grading, JudgeRecords: []any{}})
+		record := referenceRecord{CaseID: current.ID, Valid: true, Grading: grading, JudgeRecords: judges}
+		if current.HasCounterReference {
+			counterWorkspace, err := os.MkdirTemp("", "skill-eval-counter-")
+			if err != nil {
+				return nil, err
+			}
+			if err := prepareCaseWorkspace(suite, current, counterWorkspace, true); err != nil {
+				os.RemoveAll(counterWorkspace)
+				return nil, err
+			}
+			counterResponse, _ := current.CounterReference["response"].(string)
+			counterExternal, counterJudges, err := modelGrades(ctx, input, current, counterResponse, filepath.Join(input.Plan.OutputDir, "counter-reference-judges", current.ID), "counter-reference · "+current.ID)
+			if err != nil {
+				os.RemoveAll(counterWorkspace)
+				return nil, err
+			}
+			counterGrading, err := evalspec.GradeCase(counterWorkspace, counterResponse, current.Graders, counterExternal)
+			os.RemoveAll(counterWorkspace)
+			if err != nil {
+				return nil, err
+			}
+			if suite.GraderDiscrimination == "case_contrast" {
+				nonDiscriminating := []string{}
+				for _, expectation := range counterGrading.Expectations {
+					if expectation.Passed && map[string]bool{"response_contains": true, "response_not_contains": true, "response_regex": true, "markdown_table_column_regex": true, "model_rubric": true}[expectation.Grader] {
+						nonDiscriminating = append(nonDiscriminating, expectation.Text)
+					}
+				}
+				if len(nonDiscriminating) > 0 {
+					return nil, fmt.Errorf("counter-reference did not fail response-sensitive graders: %s; case %s does not prove grader discrimination", strings.Join(nonDiscriminating, ", "), current.ID)
+				}
+			} else if counterGrading.Summary.Failed == 0 {
+				return nil, fmt.Errorf("counter-reference passed graders for case %s; the graders do not separate a correct answer from a wrong one", current.ID)
+			}
+			record.CounterReference = &counterReferenceRecord{Grading: counterGrading, JudgeRecords: counterJudges}
+		}
+		records = append(records, record)
 	}
 	return records, nil
+}
+
+func modelGrades(ctx context.Context, input Input, current evalspec.Case, response, traceDir, _ string) (map[string]map[string]any, []judgeRecord, error) {
+	external := map[string]map[string]any{}
+	records := []judgeRecord{}
+	index := 0
+	for _, grader := range current.Graders {
+		if grader["type"] != "model_rubric" {
+			continue
+		}
+		if input.JudgeModel == "" {
+			return nil, nil, errors.New("model_rubric graders require --judge-model")
+		}
+		index++
+		tracePath := filepath.Join(traceDir, fmt.Sprintf("judge-%03d.jsonl", index))
+		grade, record, err := runModelGrade(ctx, input, current, grader, response, tracePath)
+		if err != nil {
+			return nil, nil, err
+		}
+		name := grader["name"].(string)
+		record.GraderName = name
+		external[name] = grade
+		records = append(records, record)
+	}
+	return external, records, nil
+}
+
+func runModelGrade(ctx context.Context, input Input, current evalspec.Case, grader map[string]any, response, tracePath string) (map[string]any, judgeRecord, error) {
+	reference, _ := current.Reference["response"].(string)
+	prompt := fmt.Sprintf("You are grading one agent response.\n\nTASK:\n%s\n\nRUBRIC:\n%s\n\nKNOWN-GOOD REFERENCE:\n%s\n\nCANDIDATE:\n%s\n\nJudge the candidate against the task and rubric, not by exact wording or\nsimilarity to the reference. The candidate passes only if it satisfies every\nrubric requirement. Return JSON only:\n{\"passed\": true, \"reason\": \"specific evidence\"}\n", current.Prompt, grader["rubric"], reference, response)
+	if err := os.MkdirAll(filepath.Dir(tracePath), 0o755); err != nil {
+		return nil, judgeRecord{}, err
+	}
+	argv, environment, err := judgeInvocation(input.Plan, tracePath, prompt)
+	if err != nil {
+		return nil, judgeRecord{}, err
+	}
+	result, err := processctl.Run(ctx, processctl.Options{Argv: argv, Env: environment, Timeout: input.JudgeTimeout})
+	if err != nil {
+		return nil, judgeRecord{}, err
+	}
+	stderrPath := strings.TrimSuffix(tracePath, filepath.Ext(tracePath)) + ".stderr.txt"
+	if err := os.WriteFile(tracePath, []byte(result.Stdout), 0o666); err != nil {
+		return nil, judgeRecord{}, err
+	}
+	if err := os.WriteFile(stderrPath, []byte(result.Stderr), 0o666); err != nil {
+		return nil, judgeRecord{}, err
+	}
+	if result.TimedOut {
+		return nil, judgeRecord{}, fmt.Errorf("judge timed out after %g seconds; see %s", input.JudgeTimeout.Seconds(), tracePath)
+	}
+	if result.ExitCode != 0 {
+		return nil, judgeRecord{}, fmt.Errorf("judge exited %d; see %s", result.ExitCode, tracePath)
+	}
+	metadata, err := parseTrace(tracePath, "")
+	if err != nil {
+		return nil, judgeRecord{}, err
+	}
+	if input.Plan.Harness == "hermes" {
+		if err := applyHermesUsage(filepath.Join(filepath.Dir(tracePath), "usage.json"), &metadata); err != nil {
+			return nil, judgeRecord{}, err
+		}
+	}
+	if input.Plan.Harness == "codex" {
+		if err := applyCodexAttestation(filepath.Join(filepath.Dir(tracePath), "codex-home"), "", "", &metadata); err != nil {
+			return nil, judgeRecord{}, err
+		}
+		if metadata.AttestationTracePath == "" {
+			return nil, judgeRecord{}, fmt.Errorf("judge model %s was not attested; persisted Codex rollout is missing; see %s", input.JudgeModel, tracePath)
+		}
+	}
+	if !metadata.ModelAttested {
+		return nil, judgeRecord{}, fmt.Errorf("judge model %s was not attested; see %s", input.JudgeModel, tracePath)
+	}
+	if !strings.EqualFold(metadata.ActualModel, input.JudgeModel) {
+		return nil, judgeRecord{}, fmt.Errorf("requested judge model %s but attested %s; see %s", input.JudgeModel, metadata.ActualModel, tracePath)
+	}
+	grade, err := parseJudgeGrade(metadata.FinalResponse)
+	if err != nil {
+		return nil, judgeRecord{}, err
+	}
+	traceHash, _ := fileHash(tracePath)
+	relativeTrace, _ := filepath.Rel(input.Plan.OutputDir, tracePath)
+	record := judgeRecord{RequestedModel: input.JudgeModel, ActualModel: metadata.ActualModel, ModelAttested: metadata.ModelAttested, SessionID: metadata.SessionID, TracePath: filepath.ToSlash(relativeTrace), TraceSHA256: traceHash, TotalTokens: metadata.TotalTokens, Cost: nil}
+	if metadata.AttestationTracePath != "" {
+		relative, _ := filepath.Rel(input.Plan.OutputDir, metadata.AttestationTracePath)
+		record.AttestationTracePath = filepath.ToSlash(relative)
+		record.AttestationTraceSHA256, _ = fileHash(metadata.AttestationTracePath)
+	}
+	return grade, record, nil
+}
+
+func parseJudgeGrade(response string) (map[string]any, error) {
+	candidates := []string{strings.TrimSpace(response)}
+	fenced := regexp.MustCompile("(?s)```(?:json)?\\s*(\\{.*?\\})\\s*```")
+	for _, match := range fenced.FindAllStringSubmatch(response, -1) {
+		candidates = append([]string{match[1]}, candidates...)
+	}
+	for _, candidate := range candidates {
+		var value map[string]any
+		if json.Unmarshal([]byte(candidate), &value) != nil {
+			continue
+		}
+		passed, passedOK := value["passed"].(bool)
+		reason, reasonOK := value["reason"].(string)
+		if passedOK && reasonOK && strings.TrimSpace(reason) != "" {
+			return map[string]any{"passed": passed, "evidence": strings.TrimSpace(reason)}, nil
+		}
+	}
+	return nil, errors.New("judge did not return {passed: boolean, reason: string}")
 }
 
 func buildSuiteSnapshot(suite *evalspec.Suite) (suiteSnapshot, error) {
@@ -760,6 +978,63 @@ func copyPayload(source, destination string) error {
 	}
 	return nil
 }
+func prepareCaseWorkspace(suite *evalspec.Suite, current evalspec.Case, workspace string, reference bool) error {
+	container := current.Raw
+	key := "fixture"
+	if reference {
+		container = current.Reference
+		key = "workspace"
+	}
+	value, _ := container[key].(string)
+	if value == "" {
+		return nil
+	}
+	source, err := evalspec.SafeRelativePath(suite.SuiteRoot, value, current.ID+"."+key)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(source)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("fixture directory not found: %s", source)
+	}
+	return copyTree(source, workspace)
+}
+func copyTree(source, destination string) error {
+	return filepath.Walk(source, func(path string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symlinked fixture entry is not allowed: %s", path)
+		}
+		relative, _ := filepath.Rel(source, path)
+		target := filepath.Join(destination, relative)
+		if info.IsDir() {
+			return os.MkdirAll(target, info.Mode().Perm())
+		}
+		input, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer input.Close()
+		output, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(output, input)
+		closeErr := output.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
+}
+func optionalString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
+}
 func stringSlice(value any) []string {
 	raw, _ := value.([]any)
 	result := []string{}
@@ -817,10 +1092,28 @@ type suiteSnapshot struct {
 	Cases                []snapshotCase `json:"cases"`
 }
 type referenceRecord struct {
-	CaseID       string               `json:"case_id"`
-	Valid        bool                 `json:"valid"`
+	CaseID           string                  `json:"case_id"`
+	Valid            bool                    `json:"valid"`
+	Grading          evalspec.GradeResult    `json:"grading"`
+	JudgeRecords     []judgeRecord           `json:"judge_records"`
+	CounterReference *counterReferenceRecord `json:"counter_reference,omitempty"`
+}
+type counterReferenceRecord struct {
 	Grading      evalspec.GradeResult `json:"grading"`
-	JudgeRecords []any                `json:"judge_records"`
+	JudgeRecords []judgeRecord        `json:"judge_records"`
+}
+type judgeRecord struct {
+	RequestedModel         string `json:"requested_model"`
+	ActualModel            string `json:"actual_model"`
+	ModelAttested          bool   `json:"model_attested"`
+	SessionID              string `json:"session_id"`
+	TracePath              string `json:"trace_path"`
+	TraceSHA256            string `json:"trace_sha256"`
+	AttestationTracePath   string `json:"attestation_trace_path"`
+	AttestationTraceSHA256 string `json:"attestation_trace_sha256"`
+	TotalTokens            any    `json:"total_tokens"`
+	Cost                   any    `json:"cost"`
+	GraderName             string `json:"grader_name"`
 }
 type scheduleRecord struct {
 	CaseID     string   `json:"case_id"`
@@ -852,7 +1145,7 @@ type conditionRecord struct {
 	SkillInjectionAttested  bool                 `json:"skill_injection_attested"`
 	SkillExplicitlyAccessed bool                 `json:"skill_explicitly_accessed"`
 	ExpectedSkillLoading    string               `json:"expected_skill_loading"`
-	JudgeRecords            []any                `json:"judge_records"`
+	JudgeRecords            []judgeRecord        `json:"judge_records"`
 	TracePath               string               `json:"trace_path"`
 	TraceSHA256             string               `json:"trace_sha256"`
 	AttestationTracePath    string               `json:"attestation_trace_path"`

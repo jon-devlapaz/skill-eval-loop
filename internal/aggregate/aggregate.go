@@ -94,6 +94,8 @@ func Run(runDir string) (map[string]any, error) {
 		}
 	}
 	caseIDs := []string{}
+	caseModelCounts := map[string]int{}
+	counterDeclared := map[string]bool{}
 	accountingAvailable := true
 	modelRubricTotal := 0
 	counterModelRubricTotal := 0
@@ -112,9 +114,52 @@ func Run(runDir string) (map[string]any, error) {
 		if !countOK || count < 0 || !declaredOK {
 			accountingAvailable = false
 		} else {
+			caseModelCounts[id] = count
+			counterDeclared[id] = declared
 			modelRubricTotal += count
 			if declared {
 				counterModelRubricTotal += count
+			}
+		}
+	}
+	judgeModel, _ := manifest["judge_model"].(string)
+	referenceJudges := []map[string]any{}
+	counterJudges := []map[string]any{}
+	if accountingAvailable {
+		references, ok := manifest["reference_validation"].([]any)
+		if !ok || len(references) != len(caseIDs) {
+			return nil, fmt.Errorf("manifest.reference_validation does not match cases")
+		}
+		seenReferences := map[string]bool{}
+		for index, raw := range references {
+			reference, ok := raw.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("manifest.reference_validation[%d] must be an object", index+1)
+			}
+			caseID, _ := reference["case_id"].(string)
+			if _, exists := caseModelCounts[caseID]; !exists || seenReferences[caseID] {
+				return nil, fmt.Errorf("manifest.reference_validation[%d].case_id is unknown or duplicate", index+1)
+			}
+			seenReferences[caseID] = true
+			judges, err := validateJudgeRecords(root, reference["judge_records"], caseModelCounts[caseID], fmt.Sprintf("manifest.reference_validation[%d].judge_records", index+1), judgeModel)
+			if err != nil {
+				return nil, err
+			}
+			referenceJudges = append(referenceJudges, judges...)
+			counter, present := reference["counter_reference"]
+			if present != counterDeclared[caseID] {
+				return nil, fmt.Errorf("manifest.reference_validation[%d].counter_reference does not match suite snapshot", index+1)
+			}
+			if present {
+				counterValue, ok := counter.(map[string]any)
+				if !ok {
+					return nil, fmt.Errorf("manifest.reference_validation[%d].counter_reference must be an object", index+1)
+				}
+				judges, err := validateJudgeRecords(root, counterValue["judge_records"], caseModelCounts[caseID], fmt.Sprintf("manifest.reference_validation[%d].counter_reference.judge_records", index+1), judgeModel)
+				if err != nil {
+					return nil, err
+				}
+				counterJudges = append(counterJudges, judges...)
 			}
 		}
 	}
@@ -137,6 +182,7 @@ func Run(runDir string) (map[string]any, error) {
 	runtimeGaps := []string{}
 	routing := map[string]int{"expected_injections": 0, "available": 0, "injection_attested": 0, "explicit_accesses": 0, "control_exposures": 0, "decisions_scored": 0, "decisions_correct": 0, "false_positives": 0, "false_negatives": 0}
 	conditionRecords := map[string][]map[string]any{"without_skill": {}, "with_skill": {}}
+	conditionJudges := []map[string]any{}
 	for _, rawPair := range trials {
 		pair, ok := rawPair.(map[string]any)
 		if !ok {
@@ -169,6 +215,13 @@ func Run(runDir string) (map[string]any, error) {
 			}
 			observed[condition] = result
 			conditionRecords[condition] = append(conditionRecords[condition], record)
+			if accountingAvailable {
+				judges, err := validateJudgeRecords(root, record["judge_records"], caseModelCounts[caseID], label+"."+condition+".judge_records", judgeModel)
+				if err != nil {
+					return nil, err
+				}
+				conditionJudges = append(conditionJudges, judges...)
+			}
 			if result.success {
 				totals[condition]++
 			}
@@ -227,14 +280,18 @@ func Run(runDir string) (map[string]any, error) {
 	}
 	operations := map[string]any{"without_skill": usage(conditionRecords["without_skill"], pairCount), "with_skill": usage(conditionRecords["with_skill"], pairCount), "condition_judges": unknownUsage(), "references": unknownUsage(), "counter_references": unknownUsage(), "full": unknownUsage()}
 	if accountingAvailable {
-		conditionJudges := modelRubricTotal * 2 * trialsPerCase
+		conditionJudgesExpected := modelRubricTotal * 2 * trialsPerCase
 		references := modelRubricTotal
 		counters := counterModelRubricTotal
-		full := pairCount*2 + conditionJudges + references + counters
-		operations["condition_judges"] = usageBucket(nil, conditionJudges)
-		operations["references"] = usageBucket(nil, references)
-		operations["counter_references"] = usageBucket(nil, counters)
-		operations["full"] = usageBucket(append(append([]map[string]any{}, conditionRecords["without_skill"]...), conditionRecords["with_skill"]...), full)
+		full := pairCount*2 + conditionJudgesExpected + references + counters
+		operations["condition_judges"] = usageBucket(conditionJudges, conditionJudgesExpected)
+		operations["references"] = usageBucket(referenceJudges, references)
+		operations["counter_references"] = usageBucket(counterJudges, counters)
+		allRecords := append(append([]map[string]any{}, conditionRecords["without_skill"]...), conditionRecords["with_skill"]...)
+		allRecords = append(allRecords, conditionJudges...)
+		allRecords = append(allRecords, referenceJudges...)
+		allRecords = append(allRecords, counterJudges...)
+		operations["full"] = usageBucket(allRecords, full)
 	}
 	return map[string]any{"schema_version": 2, "skill_name": skillName, "verdict": verdict, "outcome_verdict": outcome, "valid": true, "artifact_valid": true, "mechanism_valid": len(mechanismGaps) == 0, "runtime_attestation_complete": len(runtimeGaps) == 0, "activation_mode": activation, "grader_discrimination": map[string]any{"claim": stringDefault(suite["grader_discrimination"], "none"), "validated": false}, "selection_verdict": "not_measured", "invalid_reasons": []any{}, "mechanism_gaps": stringsAny(sortedUnique(mechanismGaps)), "runtime_attestation_gaps": stringsAny(sortedUnique(runtimeGaps)), "pair_count": pairCount, "task_success": map[string]any{"without_skill": map[string]any{"passed": totals["without_skill"], "rate": round3(controlRate)}, "with_skill": map[string]any{"passed": totals["with_skill"], "rate": round3(treatmentRate)}, "delta": round3(delta), "pair_outcomes": pairOutcomes}, "routing": map[string]any{"expected_injections": routing["expected_injections"], "available": routing["available"], "injection_attested": routing["injection_attested"], "explicit_accesses": routing["explicit_accesses"], "control_exposures": routing["control_exposures"], "decisions_scored": 0, "decisions_correct": 0, "false_positives": 0, "false_negatives": 0, "accuracy": nil}, "operations": operations, "limits": []any{"This is a local paired diagnostic, not a distribution or significance claim.", "The suite did not declare grader_discrimination=case_contrast; optional counters do not prove every response-sensitive grader distinguishes a known good/bad pair.", harness + " skill exposure is configured by the selected adapter; runtime attestation and tool-profile precision vary by harness.", "Condition order is counterbalanced by trial; temporal drift remains possible."}}, nil
 }
@@ -242,6 +299,46 @@ func Run(runDir string) (map[string]any, error) {
 type conditionResult struct {
 	success, available, injected, accessed bool
 	activation                             string
+}
+
+func validateJudgeRecords(root string, value any, expected int, label, requested string) ([]map[string]any, error) {
+	raw, ok := value.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s must be a list", label)
+	}
+	if len(raw) != expected {
+		return nil, fmt.Errorf("%s does not match the case model_rubric_count", label)
+	}
+	records := make([]map[string]any, 0, len(raw))
+	for index, item := range raw {
+		record, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s[%d] must be an object", label, index+1)
+		}
+		itemLabel := fmt.Sprintf("%s[%d]", label, index+1)
+		trace, err := requireHash(root, record, "trace", itemLabel)
+		if err != nil {
+			return nil, err
+		}
+		traces := []string{trace}
+		if value, _ := record["attestation_trace_path"].(string); value != "" {
+			attestation, err := requireHash(root, record, "attestation_trace", itemLabel)
+			if err != nil {
+				return nil, err
+			}
+			traces = append(traces, attestation)
+		}
+		observed, _, _, err := traceEvidence(traces, "")
+		if err != nil {
+			return nil, err
+		}
+		actual, _ := record["actual_model"].(string)
+		if requested == "" || !strings.EqualFold(observed, requested) || !strings.EqualFold(actual, observed) {
+			return nil, fmt.Errorf("%s judge model mismatch", itemLabel)
+		}
+		records = append(records, record)
+	}
+	return records, nil
 }
 
 func validateCondition(root string, record map[string]any, condition, label, caseID string, trial int, requested, harness, skillName, skillHash string) (conditionResult, error) {
