@@ -11,7 +11,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825a76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
@@ -64,7 +64,7 @@ jobs:
       TINK_REVISION: 2b082b5032b6f6cef6ea301868c499a93b86552f
       TINK_SOURCE: https://github.com/jon-devlapaz/tink.git
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825a76410c181273ba90b1 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
