@@ -189,5 +189,3 @@ preserved when differential scenarios are expanded.
 - `test_symlinked_installed_root_is_rejected`: symlinked installed root is rejected.
 - `test_git_symlink_is_rejected`: git symlink is rejected.
 - `test_uncommitted_worktree_drift_does_not_change_git_identity`: uncommitted worktree drift does not change git identity.
-
-
