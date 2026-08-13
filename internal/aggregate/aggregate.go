@@ -26,8 +26,8 @@ func Run(runDir string) (map[string]any, error) {
 		return nil, fmt.Errorf("run_manifest.json must use schema_version 1")
 	}
 	harness, _ := manifest["harness"].(string)
-	if harness != "pi" && harness != "claude-code" {
-		return nil, fmt.Errorf("aggregate currently supports retained Pi and Claude Code runs")
+	if harness != "pi" && harness != "claude-code" && harness != "hermes" {
+		return nil, fmt.Errorf("aggregate currently supports retained Pi, Claude Code, and Hermes runs")
 	}
 	skillName, _ := manifest["target_skill_name"].(string)
 	requested, _ := manifest["requested_model"].(string)

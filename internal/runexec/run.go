@@ -33,8 +33,8 @@ type Input struct {
 }
 
 func Run(ctx context.Context, input Input) (map[string]any, error) {
-	if input.Plan.Harness != "pi" && input.Plan.Harness != "claude-code" {
-		return nil, errors.New("run execution currently supports Pi and Claude Code")
+	if input.Plan.Harness != "pi" && input.Plan.Harness != "claude-code" && input.Plan.Harness != "hermes" {
+		return nil, errors.New("run execution currently supports Pi, Claude Code, and Hermes")
 	}
 	if input.JudgeModel != "" {
 		return nil, errors.New("model-rubric execution is not implemented yet")
@@ -181,15 +181,20 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 		if suite.ActivationMode == "forced" {
 			if input.Plan.Harness == "claude-code" {
 				prompt = "/" + suite.SkillName + " " + prompt
+			} else if input.Plan.Harness == "hermes" {
+				prompt = "Use the " + suite.SkillName + " skill. " + prompt
 			} else {
 				prompt = "/skill:" + suite.SkillName + " " + prompt
 			}
 		}
 	}
-	argv := targetArgv(input.Plan, suite, tools, installed, prompt)
+	argv, environment, err := targetInvocation(input.Plan, suite, tools, conditionDir, installed, prompt)
+	if err != nil {
+		return conditionRecord{}, err
+	}
 	startedAt := time.Now().UTC()
 	started := time.Now()
-	result, err := processctl.Run(ctx, processctl.Options{Argv: argv, CWD: workspace, Timeout: input.Timeout})
+	result, err := processctl.Run(ctx, processctl.Options{Argv: argv, CWD: workspace, Env: environment, Timeout: input.Timeout})
 	if err != nil {
 		return conditionRecord{}, err
 	}
@@ -204,6 +209,11 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 	metadata, err := parseTrace(tracePath, suite.SkillName)
 	if err != nil {
 		return conditionRecord{}, err
+	}
+	if input.Plan.Harness == "hermes" {
+		if err := applyHermesUsage(filepath.Join(outputs, "usage.json"), &metadata); err != nil {
+			return conditionRecord{}, err
+		}
 	}
 	if !metadata.ModelAttested || !strings.EqualFold(metadata.ActualModel, input.Plan.Model) {
 		return conditionRecord{}, fmt.Errorf("target trace model does not match requested model %s; retained trace at %s", input.Plan.Model, tracePath)
@@ -241,6 +251,14 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 	traceRelative, _ := filepath.Rel(input.Plan.OutputDir, tracePath)
 	responseRelative, _ := filepath.Rel(input.Plan.OutputDir, responsePath)
 	gradingRelative, _ := filepath.Rel(input.Plan.OutputDir, gradingPath)
+	toolEnforcement := "exact_cli_allowlist"
+	if input.Plan.Harness == "hermes" {
+		if suite.ToolProfile == "no_tools" {
+			toolEnforcement = "disabled_toolset"
+		} else {
+			toolEnforcement = "toolset_posture_only"
+		}
+	}
 	return conditionRecord{
 		CaseID: current.ID, Trial: trial, Condition: condition,
 		StartedAt:       startedAt.Format("2006-01-02T15:04:05.000000+00:00"),
@@ -250,7 +268,7 @@ func runCondition(ctx context.Context, input Input, suite *evalspec.Suite, curre
 		SessionID: metadata.SessionID, InputTokens: metadata.InputTokens, OutputTokens: metadata.OutputTokens,
 		TotalTokens: metadata.TotalTokens, Cost: nil, AvailableSkills: available,
 		SkillAvailable: condition == "with_skill", SkillActivation: activation,
-		RequestedTools: tools, ToolEnforcement: "exact_cli_allowlist", InstalledSkillPath: filepath.ToSlash(relativeInstalled),
+		RequestedTools: tools, ToolEnforcement: toolEnforcement, InstalledSkillPath: filepath.ToSlash(relativeInstalled),
 		SkillInjectionAttested: metadata.SkillInjectionAttested, SkillExplicitlyAccessed: metadata.SkillExplicitlyAccessed,
 		ExpectedSkillLoading: map[bool]string{true: current.ExpectedSkillLoading, false: "forbidden"}[condition == "with_skill"],
 		JudgeRecords:         []any{}, TracePath: filepath.ToSlash(traceRelative), TraceSHA256: traceHash,
@@ -267,10 +285,31 @@ type traceMetadata struct {
 	InputTokens, OutputTokens, TotalTokens any
 }
 
-func targetArgv(plan runplan.Plan, suite *evalspec.Suite, tools []string, installed, prompt string) []string {
+func targetInvocation(plan runplan.Plan, suite *evalspec.Suite, tools []string, conditionDir, installed, prompt string) ([]string, []string, error) {
 	if plan.Harness == "claude-code" {
 		claudeTools := map[string]string{"no_tools": "", "read_only": "Read,Grep,Glob", "read_write": "Read,Write", "coding": "Read,Write,Edit,Bash,Grep,Glob"}[suite.ToolProfile]
-		return []string{plan.HarnessPath, "-p", "--output-format", "stream-json", "--verbose", "--model", plan.Model, "--no-session-persistence", "--setting-sources", "project", "--strict-mcp-config", "--tools", claudeTools, "--permission-mode", "bypassPermissions", "--append-system-prompt", systemPrompt, prompt}
+		return []string{plan.HarnessPath, "-p", "--output-format", "stream-json", "--verbose", "--model", plan.Model, "--no-session-persistence", "--setting-sources", "project", "--strict-mcp-config", "--tools", claudeTools, "--permission-mode", "bypassPermissions", "--append-system-prompt", systemPrompt, prompt}, nil, nil
+	}
+	if plan.Harness == "hermes" {
+		externalDirectories := "[]"
+		if installed != "" {
+			encoded, err := json.Marshal(filepath.Dir(installed))
+			if err != nil {
+				return nil, nil, err
+			}
+			externalDirectories = "[" + string(encoded) + "]"
+		}
+		configPath := filepath.Join(conditionDir, "hermes-config.yaml")
+		config := fmt.Sprintf("{\"skills\": {\"external_dirs\": %s}, \"platform_toolsets\": {\"cli\": [\"file\"]}, \"agent\": {\"disabled_toolsets\": [\"file\"]}}\n", externalDirectories)
+		if err := os.WriteFile(configPath, []byte(config), 0o666); err != nil {
+			return nil, nil, err
+		}
+		usagePath := filepath.Join(conditionDir, "outputs", "usage.json")
+		argv := []string{plan.HarnessPath, "-z", systemPrompt + "\n\n" + prompt, "--model", plan.Model, "--ignore-rules", "--ignore-user-config", "--usage-file", usagePath}
+		if installed != "" {
+			argv = append(argv, "--skills", suite.SkillName)
+		}
+		return argv, environmentWith("HERMES_CONFIG", configPath), nil
 	}
 	argv := []string{plan.HarnessPath, "--print", "--mode", "json", "--no-session", "--no-skills", "--no-extensions", "--no-prompt-templates", "--no-context-files", "--approve", "--model", plan.Model, "--append-system-prompt", systemPrompt}
 	if len(tools) == 0 {
@@ -281,7 +320,49 @@ func targetArgv(plan runplan.Plan, suite *evalspec.Suite, tools []string, instal
 	if installed != "" {
 		argv = append(argv, "--skill", installed)
 	}
-	return append(argv, prompt)
+	return append(argv, prompt), nil, nil
+}
+
+func environmentWith(key, value string) []string {
+	environment := append([]string(nil), os.Environ()...)
+	prefix := key + "="
+	for index, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			environment[index] = prefix + value
+			return environment
+		}
+	}
+	return append(environment, prefix+value)
+}
+
+func applyHermesUsage(path string, metadata *traceMetadata) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var usage map[string]any
+	if err := json.Unmarshal(data, &usage); err != nil {
+		return err
+	}
+	if model, ok := usage["model"].(string); ok {
+		if metadata.ActualModel != "" && !strings.EqualFold(metadata.ActualModel, model) {
+			metadata.ModelAttested = false
+		} else {
+			metadata.ActualModel = model
+			metadata.ModelAttested = true
+		}
+	}
+	if session, ok := usage["session_id"].(string); ok {
+		metadata.SessionID = session
+	}
+	metadata.InputTokens = integerJSON(usage["input_tokens"])
+	metadata.OutputTokens = integerJSON(usage["output_tokens"])
+	if input, ok := metadata.InputTokens.(int); ok {
+		if output, ok := metadata.OutputTokens.(int); ok {
+			metadata.TotalTokens = input + output
+		}
+	}
+	return nil
 }
 
 func parseTrace(path, skillName string) (traceMetadata, error) {

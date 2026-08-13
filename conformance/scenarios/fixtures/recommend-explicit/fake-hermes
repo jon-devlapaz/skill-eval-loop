@@ -5,5 +5,38 @@ if [ "${1:-}" = "--version" ]; then
   printf 'fake-hermes 1.0\n'
   exit 0
 fi
+if [ "${1:-}" = "-z" ]; then
+  with_skill=false
+  usage_file=''
+  model=''
+  previous=''
+  for argument in "$@"; do
+    if [ "$previous" = "--usage-file" ]; then usage_file=$argument; fi
+    if [ "$previous" = "--model" ]; then model=$argument; fi
+    if [ "$argument" = "--skills" ]; then with_skill=true; fi
+    previous=$argument
+  done
+  session=session-hermes-control
+  response=no
+  skills='[]'
+  order=2
+  if [ "$with_skill" = true ]; then
+    session=session-hermes-treatment
+    response=ok
+    skills='["skill"]'
+    order=3
+  fi
+  printf '{"executable":"fake-hermes","argv":["fake-hermes"' >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  for argument in "$@"; do
+    escaped=$(printf '%s' "$argument" | sed 's/\\/\\\\/g; s/"/\\"/g' | awk 'BEGIN { ORS="" } NR > 1 { printf "\\n" } { printf "%s", $0 }')
+    printf ',"%s"' "$escaped" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  done
+  escaped_config=$(printf '%s' "$HERMES_CONFIG" | sed 's/\\/\\\\/g; s/"/\\"/g')
+  printf '],"cwd":"%s","environment":{"HERMES_CONFIG":"%s"},"order":%s,"status":0,"timed_out":false}\n' "$PWD" "$escaped_config" "$order" >> "$SKILL_EVAL_CONFORMANCE_LOG"
+  printf '{"model":"%s","session_id":"%s","input_tokens":1,"output_tokens":1}\n' "$model" "$session" > "$usage_file"
+  printf '{"type":"system","subtype":"init","model":"%s","session_id":"%s","skills":%s}\n' "$model" "$session" "$skills"
+  printf '{"message":{"role":"assistant","model":"%s","content":[{"type":"text","text":"%s"}]}}\n' "$model" "$response"
+  exit 0
+fi
 printf 'unexpected invocation\n' >&2
 exit 9
