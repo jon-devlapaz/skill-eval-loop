@@ -21,6 +21,7 @@ import (
 	"github.com/jon-devlapaz/skill-eval-loop/internal/recommend"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/runexec"
 	"github.com/jon-devlapaz/skill-eval-loop/internal/runplan"
+	"github.com/jon-devlapaz/skill-eval-loop/internal/simpleeval"
 )
 
 func main() {
@@ -291,6 +292,9 @@ func runRun(arguments []string) int {
 	skillPath := flags.String("skill-path", "", "target skill directory")
 	evalsPath := flags.String("evals-path", "", "eval suite JSON path")
 	outputDir := flags.String("output-dir", "", "retained run directory")
+	skill := flags.String("skill", "", "minimum-contract skill directory")
+	tasks := flags.String("tasks", "", "minimum-contract JSONL task file")
+	output := flags.String("output", "", "minimum-contract retained run directory")
 	model := flags.String("model", "", "exact pinned target model")
 	trials := flags.Int("trials", 1, "paired trials per case")
 	harness := flags.String("harness", "", "harness name")
@@ -303,6 +307,51 @@ func runRun(arguments []string) int {
 	dryRun := flags.Bool("dry-run", false, "validate and print the run plan")
 	if err := flags.Parse(arguments); err != nil {
 		return 2
+	}
+	if *skill != "" || *tasks != "" || *output != "" {
+		plan, err := simpleeval.BuildDryRun(simpleeval.DryRunInput{
+			SkillPath: *skill, TasksPath: *tasks, Harness: *harness, HarnessBin: *harnessBin,
+			Model: *model, JudgeModel: *judgeModel, Trials: *trials,
+			TimeoutSeconds: *timeoutSeconds, OutputDir: *output,
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return 1
+		}
+		if *dryRun {
+			data, err := simpleeval.DryRunBytes(plan)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+				return 1
+			}
+			if _, err := os.Stdout.Write(data); err != nil {
+				return 1
+			}
+			return 0
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		result, err := simpleeval.RunSuite(ctx, plan)
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				fmt.Fprintln(os.Stderr, "ERROR: evaluation cancelled; partial evidence was preserved")
+				return 130
+			}
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return 1
+		}
+		data, err := simpleeval.SuiteBytes(result)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ERROR: %v\n", err)
+			return 1
+		}
+		if _, err := os.Stdout.Write(data); err != nil {
+			return 1
+		}
+		if !result.Valid {
+			return 1
+		}
+		return 0
 	}
 	if *skillPath == "" || *model == "" || *harness == "" {
 		fmt.Fprintln(os.Stderr, "ERROR: --skill-path, --model, and --harness are required")
@@ -419,6 +468,9 @@ Run a paired harness evaluation with and without one skill.
 
 options:
   -h, --help            show this help message and exit
+  --skill SKILL         minimum-contract skill directory
+  --tasks TASKS         minimum-contract JSONL task file
+  --output OUTPUT       minimum-contract retained run directory
   --skill-path SKILL_PATH
   --evals-path EVALS_PATH
   --output-dir OUTPUT_DIR
