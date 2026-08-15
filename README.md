@@ -73,12 +73,29 @@ Live exit status is `0` when quality evidence is complete, `1` when the runner
 is valid but quality is unknown or was not judged, and `2` when the runner is
 invalid.
 
+Calibrate the pairwise judge against versioned human-labeled
+`known-better`, `known-worse`, and `tie` cases before a live quality pilot:
+
+```bash
+python3 skills/skill-eval-loop/scripts/skill_eval_loop.py calibrate \
+  --fixtures /absolute/path/to/calibration/v1.json \
+  --output /absolute/path/to/fresh-calibration \
+  --harness codex \
+  --harness-bin /absolute/path/to/codex \
+  --model exact-model-id \
+  --judge-model exact-judge-model-id \
+  --dry-run
+```
+
+`calibrate` exits `0` when agreements meet the locked threshold, `1` when the
+runner is valid but the judge disagrees, and `2` when a judgment is invalid.
+
 ## Boundaries
 
 The minimum runner supports Codex, deterministic graders, a provisional
-same-provider rubric judge, and blinded pairwise comparison. It does not
-provide independent judging, pricing, parallel execution, provider discovery,
-or adapters for other harnesses.
+same-provider rubric judge, blinded pairwise comparison, and human-labeled
+calibration fixtures. It does not provide independent judging, pricing,
+parallel execution, provider discovery, or adapters for other harnesses.
 
 ## Development
 

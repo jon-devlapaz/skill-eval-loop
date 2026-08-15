@@ -208,8 +208,13 @@ or `tie` plus an overall winner. Pairwise status is quality evidence; it does
 not change runner validity. A failed per-output judgment makes pairwise status
 `unknown` and makes no pairwise call.
 
-Human calibration remains a separate requirement before a comparative quality
-claim.
+Human calibration is a separate `calibrate` command. It loads a versioned
+fixture with `known-better`, `known-worse`, and `tie` cases, each with a
+locked human winner and rationale. The judge sees anonymized candidates `A`
+and `B`. The report restores `better`/`other`/`tie`, counts agreements against
+`minimum_agreements`, and retains disagreements with the human rationale.
+Same-provider calibration remains provisional. A live paired pilot should wait
+until calibration is accepted and a human reviews disagreements.
 
 ## Reports and exit status
 

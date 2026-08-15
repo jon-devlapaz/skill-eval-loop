@@ -90,6 +90,32 @@ the runner model. An OpenAI model judging another OpenAI model is explicitly
 same-provider evidence, not an independent judgment. A recommended OpenAI-only
 pair is `--model gpt-5.6-terra --judge-model gpt-5.6-sol`.
 
+## Calibrate the pairwise judge
+
+Score the judge against versioned human-labeled cases before a live quality
+pilot. The suite must include `known-better`, `known-worse`, and `tie`, each
+with rationale. The judge sees anonymized `A`/`B` text only.
+
+```bash
+"$EVALUATOR" calibrate \
+  --fixtures /absolute/path/to/calibration/v1.json \
+  --output /absolute/path/to/fresh-calibration \
+  --harness codex \
+  --harness-bin /absolute/path/to/codex \
+  --model exact-model-id \
+  --judge-model exact-judge-model-id \
+  --dry-run
+```
+
+Dry-run prints the locked cases and invocation count. A live calibrate retains
+`calibration.json` plus per-case judge artifacts. `accepted` is true only when
+every required judgment succeeds and agreements meet `minimum_agreements`.
+Disagreements keep the human rationale. Exit `0` if accepted, `1` if the
+runner is valid but below threshold, and `2` if a judgment is invalid.
+
+Do not treat same-provider calibration as independent. Do not run a live paired
+pilot until calibration is accepted and a human reviews disagreements.
+
 ## Run one pair
 
 Run the identical command without `--dry-run`. The runner:

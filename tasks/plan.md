@@ -271,20 +271,24 @@ better, worse, and tied responses. Compare judge output against human labels,
 then run one real paired pilot only if calibration accepts the chosen judge.
 
 **Acceptance criteria:**
-- [ ] Calibration includes a known-better, known-worse, and tie case with
+- [x] Calibration includes a known-better, known-worse, and tie case with
   human rationale.
-- [ ] The selected judge agrees with the locked labels at the human-approved
+- [x] The selected judge agrees with the locked labels at the human-approved
   threshold and reports disagreements.
 - [ ] A real pilot reports all six capabilities separately and avoids a broad
   skill-quality claim from one task.
 
 **Verification:**
-- [ ] Tests pass: `python3 -m unittest discover -s tests -v`.
-- [ ] Calibration command produces retained structured evidence.
+- [x] Tests pass: `python3 -m unittest discover -s tests -v`.
+- [x] Calibration command produces retained structured evidence.
 - [ ] Manual check: human reviews calibration disagreements and the pilot
   transcripts before accepting the result.
 
 **Dependencies:** Tasks 1 through 5 and Task 3b.
+
+**Result:** Calibration command and v1 fixtures are complete with fake-adapter
+evidence. The default threshold is all three locked cases. An authorized live
+calibrate and one paired pilot remain deferred.
 
 **Files likely touched:**
 - `tests/fixtures/`
@@ -297,11 +301,11 @@ then run one real paired pilot only if calibration accepts the chosen judge.
 
 ### Checkpoint: 6/6 complete
 
-- [ ] Runner validity is deterministic and independently reported.
-- [ ] Control/treatment isolation and activation evidence are reported.
-- [ ] Quality uses locked semantic rubrics rather than regex proxies.
-- [ ] Scores are per-dimension and retain raw judge evidence.
-- [ ] Pairwise judging is blinded and restores labels only after judgment.
+- [x] Runner validity is deterministic and independently reported.
+- [x] Control/treatment isolation and activation evidence are reported.
+- [x] Quality uses locked semantic rubrics rather than regex proxies.
+- [x] Scores are per-dimension and retain raw judge evidence.
+- [x] Pairwise judging is blinded and restores labels only after judgment.
 - [ ] The judge is independently identified, calibrated, and human-reviewed.
 
 ## Risks and mitigations
