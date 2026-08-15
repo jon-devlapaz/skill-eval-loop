@@ -28,6 +28,82 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             check=False,
         )
 
+    def run_live_rubric(
+        self,
+        root: Path,
+        *,
+        runner_model: str = "gpt-5.6-terra",
+        judge_model: str = "gpt-5.6-sol",
+        extra_env: dict[str, str] | None = None,
+        control_response: str = "Blue",
+    ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
+        skill = self.make_skill(root)
+        tasks = root / "tasks.jsonl"
+        tasks.write_text(
+            json.dumps(
+                {
+                    "id": "choice",
+                    "prompt": "Choose Blue.",
+                    "graders": [
+                        {"type": "response_not_empty"},
+                        {
+                            "type": "rubric",
+                            "dimensions": [
+                                {
+                                    "name": "safe choice",
+                                    "levels": [
+                                        {"name": "not_met", "description": "Does not choose Blue."},
+                                        {"name": "met", "description": "Chooses Blue."},
+                                    ],
+                                }
+                            ],
+                        },
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        output = root / "run"
+        codex_home = root / "codex-home"
+        codex_home.mkdir()
+        environment = {
+            **os.environ,
+            "CODEX_HOME": str(codex_home),
+            "SIMPLE_FAKE_CONTROL_RESPONSE": control_response,
+        }
+        if extra_env:
+            environment.update(extra_env)
+        result = subprocess.run(
+            [
+                "python3",
+                str(EVALUATOR),
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(output),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                runner_model,
+                "--judge-model",
+                judge_model,
+                "--timeout-seconds",
+                "1",
+            ],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=environment,
+        )
+        return result, output, output / "task-choice" / "trial-001" / "report.json"
+
     def test_healthcheck_reports_python_commands(self) -> None:
         result = self.run_cli("healthcheck", "--skill-dir", str(EVALUATOR.parents[1]))
 
@@ -338,6 +414,11 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             pair_report = json.loads((first_pair / "report.json").read_text(encoding="utf-8"))
             self.assertTrue(pair_report["runner_valid"])
             self.assertEqual(pair_report["deterministic_comparison"], "treatment_only")
+            self.assertTrue(pair_report["isolation"]["control_skill_absent"])
+            self.assertTrue(pair_report["isolation"]["treatment_skill_present"])
+            self.assertTrue(
+                pair_report["isolation"]["treatment_installed_source_hash_match"]
+            )
 
     def test_live_run_marks_model_mismatch_invalid_and_preserves_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -387,6 +468,79 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             )
             self.assertFalse(pair_report["runner_valid"])
             self.assertTrue((output / "task-choice" / "trial-001" / "control" / "trace.jsonl").is_file())
+
+    def test_live_rubric_judge_retains_structured_evidence_and_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, output, report_path = self.run_live_rubric(Path(temporary))
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["rubric_status"], "provisional_non_independent")
+            for condition in report["conditions"]:
+                judgment = condition["rubric_judgments"][0]
+                self.assertEqual(judgment["status"], "provisional_non_independent")
+                self.assertEqual(judgment["dimensions"][0]["level"], "met")
+                self.assertEqual(judgment["execution"]["requested_model"], "gpt-5.6-sol")
+                self.assertEqual(judgment["execution"]["trace_reported_model"], "gpt-5.6-sol")
+                judge_dir = output / "task-choice" / "trial-001" / condition["name"] / "judge-001"
+                self.assertTrue((judge_dir / "trace.jsonl").is_file())
+                self.assertTrue((judge_dir / "response.txt").is_file())
+
+    def test_live_rubric_judge_fails_closed_for_bad_output_or_identity(self) -> None:
+        cases = [
+            ({"SIMPLE_FAKE_JUDGE_RESPONSE": "not-json"}, "malformed_output"),
+            ({"SIMPLE_FAKE_JUDGE_OMIT_MODEL": "1"}, "model_identity_missing"),
+            ({"SIMPLE_FAKE_JUDGE_REPORTED_MODEL": "gpt-5.4"}, "model_identity_mismatch"),
+            ({"SIMPLE_FAKE_JUDGE_SLEEP_SECONDS": "2"}, "timed_out"),
+        ]
+        for environment, expected_reason in cases:
+            with self.subTest(expected_reason=expected_reason), tempfile.TemporaryDirectory() as temporary:
+                result, _, report_path = self.run_live_rubric(
+                    Path(temporary), extra_env=environment
+                )
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                report = json.loads(report_path.read_text(encoding="utf-8"))
+                self.assertEqual(report["rubric_status"], "unknown")
+                self.assertEqual(
+                    report["conditions"][0]["rubric_judgments"][0]["reason"],
+                    expected_reason,
+                )
+
+    def test_live_rubric_judge_rejects_same_exact_model_without_calling_judge(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            invocation_log = root / "invocations.txt"
+            result, _, report_path = self.run_live_rubric(
+                root,
+                judge_model="gpt-5.6-terra",
+                extra_env={"SIMPLE_FAKE_INVOCATION_LOG": str(invocation_log)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["rubric_status"], "unknown")
+            self.assertEqual(report["conditions"][0]["rubric_judgments"][0]["reason"], "same_model")
+            self.assertEqual(invocation_log.read_text(encoding="utf-8").splitlines(), ["runner", "runner"])
+
+    def test_live_rubric_judge_is_skipped_when_deterministic_preflight_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            invocation_log = root / "invocations.txt"
+            result, _, report_path = self.run_live_rubric(
+                root,
+                extra_env={"SIMPLE_FAKE_INVOCATION_LOG": str(invocation_log)},
+                control_response=" ",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["rubric_status"], "unknown")
+            self.assertEqual(
+                report["conditions"][0]["rubric_judgments"][0]["reason"],
+                "deterministic_gate_failed",
+            )
+            self.assertEqual(invocation_log.read_text(encoding="utf-8").splitlines(), ["runner", "runner"])
 
 
 if __name__ == "__main__":
