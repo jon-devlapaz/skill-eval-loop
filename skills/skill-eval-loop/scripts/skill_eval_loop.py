@@ -284,13 +284,21 @@ def copy_skill_payload(source: Path, destination: Path) -> None:
         target.chmod(path.stat().st_mode & 0o777)
 
 
-def codex_home() -> Path:
-    configured = os.environ.get("CODEX_HOME")
-    home = Path(configured) if configured else Path.home() / ".codex"
-    home = home.resolve()
-    if not home.is_dir():
-        raise ValueError(f"authenticated Codex home is unavailable: {home}")
+def prepare_run_codex_home(output: Path) -> Path:
+    home = output / "codex-home"
+    home.mkdir()
+    source = Path.home() / ".codex" / "auth.json"
+    if source.is_file():
+        target = home / "auth.json"
+        shutil.copyfile(source, target)
+        target.chmod(0o600)
     return home
+
+
+def discard_runtime_auth(home: Path) -> None:
+    target = home / "auth.json"
+    if target.is_file():
+        target.unlink()
 
 
 def trace_value(event: Any, *keys: str) -> Any:
@@ -836,11 +844,9 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("skill changed after dry-run planning")
     if output.exists():
         raise ValueError(f"output directory already exists: {output}")
-    codex_directory = codex_home()
     skill_name = skill.name
-    if (codex_directory / "skills" / skill_name).exists():
-        raise ValueError(f"target skill already exists in authenticated Codex home: {codex_directory / 'skills' / skill_name}")
     output.mkdir(parents=True)
+    codex_directory = prepare_run_codex_home(output)
     write_json(output / "config.json", {"mode": "live", "configuration": configuration, "counts": plan["counts"]})
     shutil.copyfile(tasks_path, output / "tasks.jsonl")
     result: dict[str, Any] = {
@@ -851,59 +857,62 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
         "counts": plan["counts"],
         "pairs": [],
     }
-    for task in tasks:
-        for trial in range(1, configuration["trials"] + 1):
-            pair_dir = output / f"task-{task['id']}" / f"trial-{trial:03d}"
-            pair_dir.mkdir(parents=True)
-            execution_order = ["control", "treatment"] if trial % 2 else ["treatment", "control"]
-            conditions: dict[str, dict[str, Any]] = {}
-            isolation = {"control_skill_absent": False, "treatment_skill_present": False, "treatment_hash_matches": False}
-            for condition in execution_order:
-                condition_result, current_isolation = run_condition(
-                    condition=condition,
+    try:
+        for task in tasks:
+            for trial in range(1, configuration["trials"] + 1):
+                pair_dir = output / f"task-{task['id']}" / f"trial-{trial:03d}"
+                pair_dir.mkdir(parents=True)
+                execution_order = ["control", "treatment"] if trial % 2 else ["treatment", "control"]
+                conditions: dict[str, dict[str, Any]] = {}
+                isolation = {"control_skill_absent": False, "treatment_skill_present": False, "treatment_hash_matches": False}
+                for condition in execution_order:
+                    condition_result, current_isolation = run_condition(
+                        condition=condition,
+                        pair_dir=pair_dir,
+                        skill=skill,
+                        skill_hash=configuration["skill_sha256"],
+                        skill_name=skill_name,
+                        codex_directory=codex_directory,
+                        configuration=configuration,
+                        task=task,
+                    )
+                    conditions[condition] = condition_result
+                    for key, value in current_isolation.items():
+                        isolation[key] = isolation[key] or value
+                judge_conditions(
                     pair_dir=pair_dir,
-                    skill=skill,
-                    skill_hash=configuration["skill_sha256"],
-                    skill_name=skill_name,
                     codex_directory=codex_directory,
                     configuration=configuration,
                     task=task,
+                    conditions=conditions,
+                    isolation=isolation,
                 )
-                conditions[condition] = condition_result
-                for key, value in current_isolation.items():
-                    isolation[key] = isolation[key] or value
-            judge_conditions(
-                pair_dir=pair_dir,
-                codex_directory=codex_directory,
-                configuration=configuration,
-                task=task,
-                conditions=conditions,
-                isolation=isolation,
-            )
-            report, report_path, markdown_path = write_pair_report(
-                pair_dir,
-                task,
-                trial,
-                execution_order,
-                skill_name,
-                configuration["skill_sha256"],
-                conditions,
-                isolation,
-            )
-            if not report["runner_valid"]:
-                result["valid"] = False
-            result["pairs"].append(
-                {
-                    "task_id": task["id"],
-                    "trial": trial,
-                    "runner_valid": report["runner_valid"],
-                    "execution_order": execution_order,
-                    "report_json": str(report_path.relative_to(output).as_posix()),
-                    "report_markdown": str(markdown_path.relative_to(output).as_posix()),
-                }
-            )
-    write_json(output / "run.json", result)
-    return result
+                report, report_path, markdown_path = write_pair_report(
+                    pair_dir,
+                    task,
+                    trial,
+                    execution_order,
+                    skill_name,
+                    configuration["skill_sha256"],
+                    conditions,
+                    isolation,
+                )
+                if not report["runner_valid"]:
+                    result["valid"] = False
+                result["pairs"].append(
+                    {
+                        "task_id": task["id"],
+                        "trial": trial,
+                        "runner_valid": report["runner_valid"],
+                        "execution_order": execution_order,
+                        "report_json": str(report_path.relative_to(output).as_posix()),
+                        "report_markdown": str(markdown_path.relative_to(output).as_posix()),
+                    }
+                )
+        write_json(output / "run.json", result)
+        return result
+    finally:
+        discard_runtime_auth(codex_directory)
 
 
 def healthcheck(arguments: argparse.Namespace) -> int:

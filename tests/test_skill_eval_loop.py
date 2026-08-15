@@ -19,6 +19,15 @@ class SkillEvalLoopCliTests(unittest.TestCase):
         (skill / "SKILL.md").write_text("---\nname: target-skill\n---\n", encoding="utf-8")
         return skill
 
+    def isolated_env(self, root: Path, extra: dict[str, str] | None = None) -> dict[str, str]:
+        home = root / "user-home"
+        home.mkdir(exist_ok=True)
+        environment = {**os.environ, "HOME": str(home)}
+        environment.pop("CODEX_HOME", None)
+        if extra:
+            environment.update(extra)
+        return environment
+
     def run_cli(self, *arguments: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             ["python3", str(EVALUATOR), *arguments],
@@ -65,15 +74,13 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             encoding="utf-8",
         )
         output = root / "run"
-        codex_home = root / "codex-home"
-        codex_home.mkdir()
-        environment = {
-            **os.environ,
-            "CODEX_HOME": str(codex_home),
-            "SIMPLE_FAKE_CONTROL_RESPONSE": control_response,
-        }
-        if extra_env:
-            environment.update(extra_env)
+        environment = self.isolated_env(
+            root,
+            {
+                "SIMPLE_FAKE_CONTROL_RESPONSE": control_response,
+                **(extra_env or {}),
+            },
+        )
         result = subprocess.run(
             [
                 "python3",
@@ -370,8 +377,9 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             output = root / "run"
-            codex_home = root / "codex-home"
-            codex_home.mkdir()
+            host_skill = root / "user-home" / ".codex" / "skills" / "target-skill"
+            host_skill.mkdir(parents=True)
+            (host_skill / "SKILL.md").write_text("---\nname: target-skill\n---\n", encoding="utf-8")
             result = subprocess.run(
                 [
                     "python3",
@@ -398,7 +406,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 check=False,
-                env={**os.environ, "CODEX_HOME": str(codex_home)},
+                env=self.isolated_env(root),
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -419,8 +427,11 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertTrue(
                 pair_report["isolation"]["treatment_installed_source_hash_match"]
             )
+            self.assertTrue((output / "codex-home").is_dir())
+            self.assertFalse((output / "codex-home" / "auth.json").exists())
+            self.assertNotIn("auth.json", (first_pair / "report.json").read_text(encoding="utf-8"))
 
-    def test_live_run_marks_model_mismatch_invalid_and_preserves_evidence(self) -> None:
+    def test_live_run_copies_host_auth_json_only_during_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             skill = self.make_skill(root)
@@ -429,9 +440,11 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
                 encoding="utf-8",
             )
+            host_auth = root / "user-home" / ".codex" / "auth.json"
+            host_auth.parent.mkdir(parents=True)
+            host_auth.write_text('{"OPENAI_API_KEY":"secret"}\n', encoding="utf-8")
+            auth_log = root / "auth-log.txt"
             output = root / "run"
-            codex_home = root / "codex-home"
-            codex_home.mkdir()
             result = subprocess.run(
                 [
                     "python3",
@@ -454,11 +467,50 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 check=False,
-                env={
-                    **os.environ,
-                    "CODEX_HOME": str(codex_home),
-                    "SIMPLE_FAKE_REPORTED_MODEL": "different-model",
-                },
+                env=self.isolated_env(root, {"SIMPLE_FAKE_AUTH_LOG": str(auth_log)}),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(set(auth_log.read_text(encoding="utf-8").splitlines()), {"present"})
+            self.assertTrue((output / "codex-home").is_dir())
+            self.assertFalse((output / "codex-home" / "auth.json").exists())
+            report_text = (output / "task-choice" / "trial-001" / "report.json").read_text(encoding="utf-8")
+            self.assertNotIn("secret", report_text)
+            self.assertNotIn("auth.json", report_text)
+
+    def test_live_run_marks_model_mismatch_invalid_and_preserves_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+            output = root / "run"
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(EVALUATOR),
+                    "run",
+                    "--skill",
+                    str(skill),
+                    "--tasks",
+                    str(tasks),
+                    "--output",
+                    str(output),
+                    "--harness",
+                    "codex",
+                    "--harness-bin",
+                    str(FAKE_CODEX),
+                    "--model",
+                    "test-model",
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=self.isolated_env(root, {"SIMPLE_FAKE_REPORTED_MODEL": "different-model"}),
             )
 
             self.assertEqual(result.returncode, 1, result.stderr)

@@ -22,6 +22,13 @@ role=${SKILL_EVAL_ROLE:-runner}
 if [ -n "${SIMPLE_FAKE_INVOCATION_LOG:-}" ]; then
   printf '%s\n' "$role" >> "$SIMPLE_FAKE_INVOCATION_LOG"
 fi
+if [ -n "${SIMPLE_FAKE_AUTH_LOG:-}" ]; then
+  if [ -f "${CODEX_HOME:-}/auth.json" ]; then
+    printf 'present\n' >> "$SIMPLE_FAKE_AUTH_LOG"
+  else
+    printf 'absent\n' >> "$SIMPLE_FAKE_AUTH_LOG"
+  fi
+fi
 
 if [ "$role" = "judge" ]; then
   if [ -n "${SIMPLE_FAKE_JUDGE_SLEEP_SECONDS:-}" ]; then
