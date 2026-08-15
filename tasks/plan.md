@@ -331,3 +331,77 @@ quality claim. Judge evidence remains same-provider and non-independent.
 - What activation evidence can current Codex emit, if any?
 - Which human-approved threshold should calibration meet before a pilot result
   is considered quality evidence?
+
+## Phase 2: Karpathy hill climb (next agent)
+
+**Baseline:** branch `python-core-redesign`, no upstream. Tasks 1–6 code and
+docs are committed. `python3 -m unittest discover -s tests -v` is green (22
+tests). Live artifacts under `.eval-runs/` are gitignored: `calibrate-v1b`
+accepted 3/3 (still `provisional_non_independent`); `pilot-v1` was a saturated
+toy (“Choose Blue.” / pairwise tie). Codex CLI 0.147.0 traces omit model
+identity; missing identity is unattested, not fail-closed.
+
+**Objective:** Make `skill-eval-loop` a CI-gated hill climb on one locked
+non-toy skill suite: `run` consumes an accepted `calibrate` fixture hash; live
+calibration A/B-flips so `A` is not always the known-better seed; a live paired
+`calibrate` then `run` exits `0` with complete quality evidence
+(`quality_outcome` never a restored winner when a dimension is unknown or
+inconsistent). Same-provider judging stays `provisional_non_independent`. Out
+of scope: modularizing the evaluator script, installing GSD/NTT123, and any
+quality-winner claim on the toy pilot.
+
+**Do not start by splitting `skills/skill-eval-loop/scripts/skill_eval_loop.py`.**
+The bottleneck is eval validity, not file size.
+
+**Stop and ask** if the first target skill is unnamed, if the user wants a
+second-provider judge before the CI gate, or if transcripts are still
+`human_transcript_review_required`.
+
+### Task 7: Lock a non-toy skill suite
+
+**Description:** Replace the toy Blue prompt with one real skill directory and
+a locked JSONL suite that can fail. Do not invent the skill; ask.
+
+**Acceptance criteria:**
+- [ ] Named skill path and task file are recorded here and used by later tasks.
+- [ ] Tasks are not saturated at baseline (not every row `both_pass` by design).
+
+**Dependencies:** User names the skill. No code until that answer exists.
+
+### Task 8: Bind calibration into live `run`
+
+**Description:** Force A/B assignment flips in live `calibrate` (not only the
+fake adapter). Make `run` consume the accepted calibration fixture hash and
+refuse a quality-complete exit when calibration is `not_run` or the hash
+drifts.
+
+**Acceptance criteria:**
+- [ ] Live calibrate seeds are not all mapped `A=better`.
+- [ ] `run.json` records the bound fixture hash; mismatch or `not_run` cannot
+  exit `0` on a rubric run.
+
+**Verification:**
+- [ ] `python3 -m unittest discover -s tests -v`
+- [ ] Focused tests cover hash bind, missing calibration, and A/B flip.
+
+**Dependencies:** Task 7 for the live suite; tests can land first.
+
+### Task 9: CI as the product UI
+
+**Description:** Add a CI job that runs unit tests and, when secrets exist, the
+locked calibrate-then-run pair. The gate is complete hash-bound quality
+evidence, not a skill-quality winner.
+
+**Acceptance criteria:**
+- [ ] CI fails on unittest failure or runner-invalid (`exit 2`).
+- [ ] Rubric runs without bound accepted calibration cannot look like a quality
+  pass.
+
+**Dependencies:** Task 8.
+
+### Task 10: Independent judge or holdout
+
+**Description:** Only after Tasks 8–9. A second provider or a held-out human
+set. Same-provider evidence stays provisional until then.
+
+**Dependencies:** Tasks 8 and 9. User approval before adding a provider.
