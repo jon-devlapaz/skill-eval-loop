@@ -49,6 +49,11 @@ Run a side-effect-free plan before a live invocation:
 Verify the printed hashes and invocation counts, obtain authorization for the
 live calls, then run the same command without `--dry-run`.
 
+For rubric tasks, also pass `--judge-model` with a different exact model
+identifier. The runner judges each condition only after deterministic gates
+pass. A valid same-provider judgment is `provisional_non_independent`; a
+timeout, failed gate, malformed response, or identity mismatch is `unknown`.
+
 The runner invokes Codex sequentially in read-only mode. Odd trials run
 control first; even trials run treatment first. It retains `run.json`, the
 planned configuration, tasks, condition responses, traces, stderr, and a
@@ -60,10 +65,10 @@ interpreting `treatment_only`, `both_pass`, `control_only`, or `both_fail`.
 
 ## Boundaries
 
-The minimum runner supports Codex and deterministic graders. It plans rubric
-grader calls but deliberately rejects them in live runs until an independently
-calibrated judge implementation is needed. It does not provide pricing,
-parallel execution, provider discovery, or adapters for other harnesses.
+The minimum runner supports Codex, deterministic graders, and a provisional
+same-provider rubric judge. It does not provide blinded pairwise comparison,
+independent judging, pricing, parallel execution, provider discovery, or
+adapters for other harnesses.
 
 ## Development
 

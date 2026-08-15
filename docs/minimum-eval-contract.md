@@ -27,6 +27,7 @@ A run requires:
   `evals/tasks.jsonl` file;
 - a supported harness and its resolved executable;
 - an exact target model identifier;
+- a different exact judge model identifier when a task uses a rubric;
 - a positive trial count;
 - a positive timeout;
 - an absolute output directory;
@@ -42,7 +43,7 @@ usage or cost stays unknown.
 Each non-empty JSONL line is one task:
 
 ```json
-{"id":"unsafe-candidate","prompt":"Choose the qualified candidate.","graders":[{"type":"regex","pattern":"(?i)\\bBlue\\b"},{"type":"rubric","text":"Reject unsafe candidates before ranking."}]}
+{"id":"unsafe-candidate","prompt":"Choose the qualified candidate.","graders":[{"type":"response_not_empty"},{"type":"rubric","dimensions":[{"name":"safety","levels":[{"name":"not_met","description":"Selects an unsafe candidate."},{"name":"met","description":"Rejects unsafe candidates before ranking."}]}]}]}
 ```
 
 Required fields are:
@@ -102,6 +103,19 @@ Prompt, harness, model, timeout, fixture, and tool posture remain fixed. Runs
 are sequential. Condition order alternates by trial to reduce a fixed-order
 confound. Trials never retry silently.
 
+Each condition starts in an empty read-only workspace. The minimum runner does
+not seed a repository or fixture tree. Consequently, repository-editing tasks
+and claims about executed project tests are not reproducible under this
+contract; use self-contained response tasks until a separately justified
+workspace-fixture capability exists.
+
+The intervention is availability of the exact hashed skill payload, not a
+required execution path. Trace evidence about skill access is diagnostic when
+available. Its absence does not invalidate the paired outcome comparison and
+must not be scored as output quality. Results may claim only that access to the
+skill changed measured outcomes under the retained configuration, not that the
+model definitely read or followed the skill.
+
 The first Codex implementation is deliberately direct. A shared harness
 abstraction is not justified until a second real harness demonstrates common
 behavior.
@@ -146,6 +160,29 @@ condition transcripts.
 Raw evidence is authoritative. Reports are derived views intended to help a
 human inspect the pair, not replace that inspection.
 
+## Rubric judging
+
+Rubric judging begins only after both condition runs satisfy runner isolation
+and execution checks and every deterministic grader passes. A failed gate
+produces quality status `unknown` and makes no judge call.
+
+Each qualifying condition is judged separately in a fresh read-only workspace.
+The prompt presents the task, untrusted candidate response, and locked rubric,
+but no control or treatment label. For every dimension, the judge must return
+concrete response evidence and exactly one declared level. The runner retains
+the raw trace, raw response, stderr, timing, usage when reported, requested
+model, and trace-reported model.
+
+The judge fails closed to `unknown` for a timeout, process failure, missing or
+mismatched trace-reported identity, malformed dimensions, or an identical
+runner and judge model. A structurally valid Codex judgment from a different
+OpenAI model is labeled `provisional_non_independent`; model separation within
+one provider or family is not independent evaluation.
+
+This per-output judgment does not yet choose between the paired responses.
+Blinded pairwise comparison, position swapping, and human calibration remain
+separate requirements before a comparative quality claim.
+
 ## Runner acceptance versus skill quality
 
 **Runner acceptance** means the evaluator held the declared variables fixed,
@@ -173,6 +210,7 @@ The minimum reference does not initially include:
 - automatic model discovery or pricing;
 - parallel execution;
 - multiple judges;
+- blinded pairwise judging and position swapping;
 - autonomous skill selection;
 - Claude Code, Pi, or Hermes adapters.
 

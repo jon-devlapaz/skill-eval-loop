@@ -40,6 +40,11 @@ requirements. Use `file_exists` and `json_equal` only when the configured
 harness can create the stated workspace artifact. Keep unknown task metadata
 for human review; it does not affect execution.
 
+The current runner starts each condition in an empty read-only workspace. Use
+response-only tasks unless the prompt itself contains all required material.
+Do not use repository-editing or test-running tasks as quality evidence: there
+is no seeded repository for the agent to change or verify.
+
 ## Find or author the suite
 
 Pass `--tasks` when evaluating a caller-owned JSONL task file. Otherwise, the
@@ -80,8 +85,10 @@ invocation count. Obtain authorization for the displayed live calls before
 running without `--dry-run`.
 
 For `tasks × trials`, the runner plans two target invocations per paired trial.
-Rubric graders are counted during planning but are not yet supported in a live
-minimum run.
+For rubric tasks, also pass an exact `--judge-model`. The judge must differ from
+the runner model. An OpenAI model judging another OpenAI model is explicitly
+same-provider evidence, not an independent judgment. A recommended OpenAI-only
+pair is `--model gpt-5.6-terra --judge-model gpt-5.6-sol`.
 
 ## Run one pair
 
@@ -91,11 +98,19 @@ Run the identical command without `--dry-run`. The runner:
 - runs sequentially, alternating control-first and treatment-first by trial;
 - invokes Codex in read-only mode;
 - retains response, trace, stderr, execution metadata, and reports;
+- runs deterministic gates before any rubric judge;
+- asks the judge for concrete evidence and one locked level per dimension;
 - never retries silently.
 
 Treat `runner_valid` and the deterministic comparison separately. A valid
 runner may show `both_pass`, `both_fail`, `control_only`, or `treatment_only`.
 Read both responses before making a quality claim.
+
+For rubric tasks, inspect each condition's `rubric_judgments`. A successful
+Codex judgment is labeled `provisional_non_independent`. A timeout, failed
+deterministic gate, malformed response, missing or mismatched judge identity,
+or identical runner and judge model produces `unknown`. The runner does not
+turn those cases into a quality pass.
 
 ## Inspect retained evidence
 
@@ -104,5 +119,12 @@ traces, and stderr. Confirm the control lacks the target skill, the treatment
 contains the source hash, and any trace-reported model identity agrees with the
 requested model.
 
-Do not claim broad skill quality from one pilot. Use realistic unsaturated
-tasks, repeated trials, deterministic outcomes, and human transcript review.
+Treat access to the exact hashed payload as the intervention. A trace may help
+explain how Codex used that access, but missing activation telemetry does not
+invalidate the outcome comparison or become a quality score. Phrase the result
+as the measured effect of skill access under the recorded configuration; do not
+claim that Codex definitely read or followed the skill.
+
+Do not claim broad skill quality from one pilot or from same-provider judging.
+Use realistic unsaturated tasks, repeated trials, deterministic outcomes,
+blinded comparison, human calibration, and human transcript review.
