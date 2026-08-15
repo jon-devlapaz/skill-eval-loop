@@ -193,7 +193,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             plan = json.loads(result.stdout)
             self.assertTrue(plan["valid"])
             self.assertFalse(plan["created_artifacts"])
-            self.assertEqual(plan["counts"]["total_invocations"], 12)
+            self.assertEqual(plan["counts"]["total_invocations"], 15)
             self.assertEqual(
                 plan["task_snapshot"][0]["graders"][1]["dimensions"][0]["name"],
                 "safe choice",
@@ -528,6 +528,22 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["rubric_status"], "provisional_non_independent")
+            self.assertEqual(report["pairwise_status"], "provisional_non_independent")
+            pairwise = report["pairwise"][0]
+            self.assertEqual(pairwise["status"], "provisional_non_independent")
+            self.assertEqual(pairwise["winner_label"], "A")
+            self.assertEqual(pairwise["winner_condition"], pairwise["mapping"]["A"])
+            self.assertEqual(set(pairwise["mapping"].values()), {"control", "treatment"})
+            prompt = (output / "task-choice" / "trial-001" / "pairwise-001" / "prompt.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("control", prompt)
+            self.assertNotIn("treatment", prompt)
+            payload = json.loads(prompt.split("\n\n", 1)[1])
+            self.assertEqual(
+                set(payload),
+                {"task_prompt", "candidate_A", "candidate_B", "dimensions"},
+            )
             for condition in report["conditions"]:
                 judgment = condition["rubric_judgments"][0]
                 self.assertEqual(judgment["status"], "provisional_non_independent")
@@ -593,6 +609,29 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 "deterministic_gate_failed",
             )
             self.assertEqual(invocation_log.read_text(encoding="utf-8").splitlines(), ["runner", "runner"])
+
+    def test_pairwise_judge_is_skipped_when_per_output_judgment_is_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            invocation_log = root / "invocations.txt"
+            result, output, report_path = self.run_live_rubric(
+                root,
+                extra_env={
+                    "SIMPLE_FAKE_INVOCATION_LOG": str(invocation_log),
+                    "SIMPLE_FAKE_JUDGE_RESPONSE": "not-json",
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["rubric_status"], "unknown")
+            self.assertEqual(report["pairwise_status"], "unknown")
+            self.assertEqual(report["pairwise"][0]["reason"], "per_output_unknown")
+            self.assertFalse((output / "task-choice" / "trial-001" / "pairwise-001").exists())
+            self.assertEqual(
+                invocation_log.read_text(encoding="utf-8").splitlines(),
+                ["runner", "runner", "judge", "judge"],
+            )
 
 
 if __name__ == "__main__":

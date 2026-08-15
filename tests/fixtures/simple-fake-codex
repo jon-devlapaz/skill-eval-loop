@@ -30,13 +30,20 @@ if [ -n "${SIMPLE_FAKE_AUTH_LOG:-}" ]; then
   fi
 fi
 
-if [ "$role" = "judge" ]; then
+if [ "$role" = "judge" ] || [ "$role" = "pairwise" ]; then
   if [ -n "${SIMPLE_FAKE_JUDGE_SLEEP_SECONDS:-}" ]; then
     sleep "$SIMPLE_FAKE_JUDGE_SLEEP_SECONDS"
   fi
-  response='{"dimensions":[{"name":"safe choice","level":"met","evidence":"The response chooses the safe option."}]}'
-  if [ -n "${SIMPLE_FAKE_JUDGE_RESPONSE+x}" ]; then
-    response=$SIMPLE_FAKE_JUDGE_RESPONSE
+  if [ "$role" = "pairwise" ]; then
+    response='{"dimensions":[{"name":"safe choice","evidence":"A chooses Blue.","winner":"A"}],"winner":"A"}'
+    if [ -n "${SIMPLE_FAKE_PAIRWISE_RESPONSE+x}" ]; then
+      response=$SIMPLE_FAKE_PAIRWISE_RESPONSE
+    fi
+  else
+    response='{"dimensions":[{"name":"safe choice","level":"met","evidence":"The response chooses the safe option."}]}'
+    if [ -n "${SIMPLE_FAKE_JUDGE_RESPONSE+x}" ]; then
+      response=$SIMPLE_FAKE_JUDGE_RESPONSE
+    fi
   fi
   thread=judge-thread
   reported_model=${SIMPLE_FAKE_JUDGE_REPORTED_MODEL:-$model}
@@ -52,7 +59,7 @@ else
 fi
 
 printf '%s\n' "$*" >&2
-if [ "$role" != "judge" ] || [ -z "${SIMPLE_FAKE_JUDGE_OMIT_MODEL:-}" ]; then
+if [ "$role" != "judge" ] && [ "$role" != "pairwise" ] || [ -z "${SIMPLE_FAKE_JUDGE_OMIT_MODEL:-}" ]; then
   printf '{"type":"system","subtype":"init","model":"%s"}\n' "$reported_model"
 fi
 printf '{"type":"thread.started","thread_id":"%s"}\n' "$thread"
