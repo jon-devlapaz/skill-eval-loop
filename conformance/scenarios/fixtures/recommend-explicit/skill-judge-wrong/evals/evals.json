@@ -1,9 +1,0 @@
-{
-  "schema_version": 2,
-  "skill_name": "skill-judge-wrong",
-  "suite_type": "capability",
-  "dataset_origin": "author_derived",
-  "tool_profile": "no_tools",
-  "activation_mode": "forced",
-  "evals": [{"id":"judge-wrong","prompt":"JUDGE_WRONG Return ok","behavior_class":"edge","graders":[{"name":"judge","type":"model_rubric","rubric":"Pass ok."}],"reference":{"response":"ok"}}]
-}

@@ -1,8 +1,7 @@
 # Minimum Skill Evaluation Contract
 
-This document pins the contract exercised by `internal/simpleeval` golden
-fixtures. It is an implementation target for the simplified evaluator, not a
-description of the current public command.
+This document pins the contract exercised by the Python evaluator and its
+fixtures.
 
 ## Question answered
 
@@ -24,7 +23,8 @@ Changing any component creates a different evaluation.
 A run requires:
 
 - an absolute skill directory;
-- an absolute newline-delimited JSON task file;
+- either an absolute newline-delimited JSON task file or the target-owned
+  `evals/tasks.jsonl` file;
 - a supported harness and its resolved executable;
 - an exact target model identifier;
 - a positive trial count;
@@ -67,6 +67,22 @@ The initial grader vocabulary is intentionally small:
 Deterministic outcome graders are preferred. Rubric graders are reserved for
 behavior that cannot be represented fairly as an outcome check. They are
 evidence, not ground truth, and require human calibration.
+
+## Task ownership and missing suites
+
+An explicit `--tasks` path is caller-owned. Without that flag, the evaluator
+uses `SKILL/evals/tasks.jsonl`. The evaluator never creates this file or
+dispatches agents itself.
+
+When a requested target lacks both sources, the coordinator uses a fresh-context
+subagent to author only `SKILL/evals/**`. It receives the target path and task
+contract, but not coordinator conversation, expected answers, prior outputs, or
+reports. It makes no live model calls. The coordinator inspects the resulting
+diff, then dry-runs the JSONL before a paired run.
+
+This is a suite-bootstrap mechanism, not proof that tasks represent real use.
+Use independently sourced task data, blinded judging, and human calibration for
+skill-quality claims.
 
 ## Paired execution
 

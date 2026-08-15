@@ -1,1 +1,0 @@
-{"name":"run-pi-judge-mismatch","command":"run","args":["--skill-path","skill-judge-wrong","--output-dir","run-output","--model","provider/model-terra","--judge-model","provider/judge-terra","--trials","1","--harness","pi","--harness-bin","$WORKSPACE/fake-pi"],"fixture":"fixtures/recommend-explicit"}

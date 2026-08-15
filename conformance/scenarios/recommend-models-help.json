@@ -1,5 +1,0 @@
-{
-  "name": "recommend-models-help",
-  "command": "recommend-models",
-  "args": ["--help"]
-}

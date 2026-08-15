@@ -1,17 +1,4 @@
 #!/bin/sh
 set -eu
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-skill_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
-case "$(uname -s):$(uname -m)" in
-  Darwin:arm64) platform=darwin-arm64 ;;
-  Darwin:x86_64) platform=darwin-amd64 ;;
-  Linux:arm64|Linux:aarch64) platform=linux-arm64 ;;
-  Linux:x86_64|Linux:amd64) platform=linux-amd64 ;;
-  *) printf 'ERROR: unsupported platform: %s %s\n' "$(uname -s)" "$(uname -m)" >&2; exit 1 ;;
-esac
-binary="$skill_dir/bin/$platform/skill-eval-loop"
-if [ ! -x "$binary" ]; then
-  printf 'ERROR: packaged evaluator binary is missing or not executable: %s\n' "$binary" >&2
-  exit 1
-fi
-exec "$binary" "$@"
+exec python3 "$script_dir/skill_eval_loop.py" "$@"

@@ -1,110 +1,59 @@
 ---
 name: skill-eval-loop
-description: >
-  Run a paired Codex diagnostic that holds a task fixed and changes only access
-  to one local Agent Skill. Use when measuring whether a skill improves task
-  outcomes, validating a skill against JSONL eval tasks, or comparing control
-  and treatment responses with retained evidence.
+description: Run a paired, evidence-retaining Codex evaluation of one local Agent Skill against a no-skill control. Use when measuring whether a skill improves JSONL-defined task outcomes, validating a skill with deterministic graders, or comparing control and treatment responses.
 ---
 
 # Skill Eval Loop
 
-Run one **paired loop**:
+Measure one conditional claim: under fixed tasks, model, harness, timeout, and
+tool posture, does access to this exact skill payload change the outcome?
 
-```text
-same task + same Codex model + same tool posture
-                         |
-              +----------+----------+
-              |                     |
-        control: absent       treatment: present
-              |                     |
-              +----------+----------+
-                         |
-              responses + grades + traces
-```
+Keep raw responses and traces as evidence. Treat reports as derived views.
 
-The target skill is the only intended variable. Treat raw responses and traces
-as evidence; treat the report as a derived view.
+## Run the offline check first
 
-## 1. Pin the run
-
-Collect or infer:
-
-- absolute target skill directory containing `SKILL.md`;
-- absolute JSONL task path;
-- exact Codex model identifier;
-- trial count, normally `1` for a pilot;
-- positive timeout;
-- fresh absolute output directory.
-
-Use Codex for the minimum path. Calculate before any live run:
-
-```text
-paired trials      = tasks × trials
-target invocations = 2 × tasks × trials
-judge invocations  = 0
-total invocations  = target invocations
-```
-
-Keep the target skill and task file unchanged from dry-run through live
-execution.
-
-**Complete when:** every run variable and the exact live invocation count are
-visible to the user.
-
-## 2. Check the standalone package
-
-Resolve the installed skill folder and launcher:
+Use the installed skill's public launcher. It requires only Python 3.
 
 ```bash
-SKILL_EVAL_DIR=/absolute/path/to/skill-eval-loop
-EVALUATOR="$SKILL_EVAL_DIR/scripts/skill-eval-loop"
-
+EVALUATOR=/absolute/path/to/skill-eval-loop/scripts/skill-eval-loop
 "$EVALUATOR" healthcheck
-codex --version
-codex login status
 ```
 
-Existing ChatGPT authentication is sufficient; the evaluator references the
-authenticated Codex home without copying credentials. If the target skill is
-already installed in that Codex home's `skills/` directory, report control
-contamination and stop before invocation.
-
-**Complete when:** healthcheck succeeds, Codex is executable and authenticated,
-and the target skill is absent from global Codex skills.
-
-## 3. Prepare deterministic tasks
-
-Use one JSON object per non-empty line:
+Use newline-delimited JSON tasks. Each task needs a path-safe `id`, a non-empty
+`prompt`, and at least one grader.
 
 ```json
 {"id":"qualified-choice","prompt":"Choose the qualified candidate.","graders":[{"type":"regex","pattern":"(?i)\\bBlue\\b"}]}
 ```
 
-Each task requires a unique path-safe `id`, a non-empty `prompt`, and at least
-one grader. The live minimum supports:
+Use `regex` or `not_regex` for response checks. Use `file_exists` and
+`json_equal` only when the configured harness can create the stated workspace
+artifact. Keep unknown task metadata for human review; it does not affect
+execution.
 
-- `regex` with `pattern`;
-- `not_regex` with `pattern`;
-- `file_exists` with workspace-relative `path`;
-- `json_equal` with workspace-relative `path` and JSON `expected`.
+## Find or author the suite
 
-Prefer outcome checks that distinguish a useful response from a plausible but
-wrong response. Preserve semantic requirements, references, and
-counter-references as extra task metadata for manual review; they do not add
-judge calls.
+Pass `--tasks` when evaluating a caller-owned JSONL task file. Otherwise, the
+runner uses `TARGET/evals/tasks.jsonl`.
 
-**Complete when:** every task has a meaningful deterministic check and the
-task file is frozen for the paired run.
+If neither exists, do not co-author the suite. Read
+[`references/eval-authoring.md`](references/eval-authoring.md), then launch a
+fresh-context subagent with only the target's absolute path and the task
+contract. Let it write only `TARGET/evals/**` and return a factual handoff.
+Inspect the resulting diff and run a dry-run before the paired evaluation.
 
-## 4. Dry-run
+The Python runner does not spawn agents or create target files itself. Its
+missing-suite error is the precondition for this coordinator workflow.
 
-Run the packaged launcher with explicit inputs:
+## Plan the exact run
+
+Pass absolute paths and a fresh output directory. Dry-run validates consumed
+inputs, resolves the Codex executable, hashes the skill and tasks, and creates
+neither run artifacts nor provider calls.
 
 ```bash
 "$EVALUATOR" run \
   --skill /absolute/path/to/target-skill \
-  --tasks /absolute/path/to/tasks.jsonl \
   --output /absolute/path/to/fresh-run \
   --harness codex \
   --harness-bin /absolute/path/to/codex \
@@ -114,82 +63,37 @@ Run the packaged launcher with explicit inputs:
   --dry-run
 ```
 
-Verify `valid: true`, the resolved paths and hashes, the exact model and Codex
-version, `created_artifacts: false`, and the predicted invocation counts.
-Present the plan and obtain explicit authorization for the reported live calls
-and unknown cost.
+Add `--tasks /absolute/path/to/tasks.jsonl` to evaluate a task file outside the
+target skill.
 
-**Complete when:** dry-run is valid, predicts the expected calls, creates no
-output directory, and live execution is explicitly authorized.
+Verify `valid: true`, hashes, resolved model and executable, and the predicted
+invocation count. Obtain authorization for the displayed live calls before
+running without `--dry-run`.
 
-## 5. Run once
+For `tasks × trials`, the runner plans two target invocations per paired trial.
+Rubric graders are counted during planning but are not yet supported in a live
+minimum run.
 
-Execute the same command without `--dry-run`. Monitor that process and its
-condition traces. The runner executes sequentially, alternates condition order
-by trial, and retains partial evidence on failure.
+## Run one pair
 
-A failed attempt remains evidence. Diagnose it, choose a new output directory,
-and obtain authorization before another live attempt.
+Run the identical command without `--dry-run`. The runner:
 
-**Complete when:** the process exits, both planned conditions are accounted
-for, and the retained `run.json` is available for inspection.
+- uses a no-skill control and an exact-hash treatment;
+- runs sequentially, alternating control-first and treatment-first by trial;
+- invokes Codex in read-only mode;
+- retains response, trace, stderr, execution metadata, and reports;
+- never retries silently.
 
-## 6. Inspect the pair
+Treat `runner_valid` and the deterministic comparison separately. A valid
+runner may show `both_pass`, `both_fail`, `control_only`, or `treatment_only`.
+Read both responses before making a quality claim.
 
-Read:
+## Inspect retained evidence
 
-```text
-run.json
-task-<id>/trial-<n>/report.json
-task-<id>/trial-<n>/report.md
-task-<id>/trial-<n>/control/response.md
-task-<id>/trial-<n>/control/trace.jsonl
-task-<id>/trial-<n>/treatment/response.md
-task-<id>/trial-<n>/treatment/trace.jsonl
-```
+Read `run.json` followed by each pair's `report.json`, `report.md`, responses,
+traces, and stderr. Confirm the control lacks the target skill, the treatment
+contains the source hash, and any trace-reported model identity agrees with the
+requested model.
 
-Confirm:
-
-- suite and pair report `valid` / `runner_valid` are true;
-- target and total invocation counts equal the dry-run plan;
-- control target skill is absent;
-- treatment target skill is present and its installed/source hash matches;
-- treatment trace shows explicit skill access;
-- both executions completed under the same requested model and tool posture;
-- configured and resolved model evidence are labeled separately;
-- grader evidence agrees with the raw responses;
-- reported tokens are exact and missing cost stays unknown.
-
-Interpret `treatment_only`, `both_pass`, `control_only`, `both_fail`, and
-`not_scored` literally. `both_pass` can mean the task is saturated; it is not an
-evaluator failure. Compare semantic requirements manually even when both
-conditions pass deterministic checks.
-
-**Complete when:** runner validity and skill outcome are reported separately,
-both transcripts have been read, and every conclusion points to retained
-evidence.
-
-## Claim boundary
-
-A one-task pilot proves that the paired loop operates for that configuration.
-It does not establish general skill quality. Broader claims require realistic
-unsaturated tasks, repeated trials, fair graders, and transcript review.
-
-Codex receives the exact requested model through `--model`. When its JSON trace
-does not expose resolved backend identity, report `cli_configured` and keep the
-resolved identity unknown. Provider-call count and monetary cost also remain
-unknown unless Codex reports them.
-
-## Legacy branch
-
-When the user explicitly requests schema-versioned suite auditing, model
-recommendations, aggregation, another harness, or Herdr observation, use the
-legacy commands and load only the relevant reference:
-
-- suite validation: [references/eval-suite-schema.md](references/eval-suite-schema.md);
-- harness status: [references/harness-support.md](references/harness-support.md);
-- setup failures: [references/setup-remediation.md](references/setup-remediation.md);
-- retained legacy layout: [references/workspace-layout.md](references/workspace-layout.md);
-- benchmark interpretation: [references/interpret-benchmark.md](references/interpret-benchmark.md).
-
-Keep that branch separate from the minimum JSONL paired loop.
+Do not claim broad skill quality from one pilot. Use realistic unsaturated
+tasks, repeated trials, deterministic outcomes, and human transcript review.
