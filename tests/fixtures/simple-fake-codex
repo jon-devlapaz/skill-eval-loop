@@ -19,6 +19,10 @@ for argument in "$@"; do
 done
 
 role=${SKILL_EVAL_ROLE:-runner}
+judge_like=0
+if [ "$role" = "judge" ] || [ "$role" = "pairwise" ]; then
+  judge_like=1
+fi
 if [ -n "${SIMPLE_FAKE_INVOCATION_LOG:-}" ]; then
   printf '%s\n' "$role" >> "$SIMPLE_FAKE_INVOCATION_LOG"
 fi
@@ -30,7 +34,7 @@ if [ -n "${SIMPLE_FAKE_AUTH_LOG:-}" ]; then
   fi
 fi
 
-if [ "$role" = "judge" ] || [ "$role" = "pairwise" ]; then
+if [ "$judge_like" -eq 1 ]; then
   if [ -n "${SIMPLE_FAKE_JUDGE_SLEEP_SECONDS:-}" ]; then
     sleep "$SIMPLE_FAKE_JUDGE_SLEEP_SECONDS"
   fi
@@ -59,7 +63,7 @@ else
 fi
 
 printf '%s\n' "$*" >&2
-if [ "$role" != "judge" ] && [ "$role" != "pairwise" ] || [ -z "${SIMPLE_FAKE_JUDGE_OMIT_MODEL:-}" ]; then
+if [ -z "${SIMPLE_FAKE_JUDGE_OMIT_MODEL:-}" ] || [ "$judge_like" -eq 0 ]; then
   printf '{"type":"system","subtype":"init","model":"%s"}\n' "$reported_model"
 fi
 printf '{"type":"thread.started","thread_id":"%s"}\n' "$thread"

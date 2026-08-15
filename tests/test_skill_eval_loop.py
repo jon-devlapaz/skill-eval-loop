@@ -409,9 +409,12 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 env=self.isolated_env(root),
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr)
             report = json.loads(result.stdout)
             self.assertTrue(report["valid"])
+            self.assertEqual(report["quality_status"], "not_required")
+            self.assertEqual(report["activation"]["status"], "unknown")
+            self.assertEqual(report["calibration_status"], "not_run")
             self.assertEqual(len(report["pairs"]), 2)
             self.assertEqual(report["pairs"][0]["execution_order"], ["control", "treatment"])
             self.assertEqual(report["pairs"][1]["execution_order"], ["treatment", "control"])
@@ -421,6 +424,10 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertTrue((first_pair / "treatment" / "response.md").is_file())
             pair_report = json.loads((first_pair / "report.json").read_text(encoding="utf-8"))
             self.assertTrue(pair_report["runner_valid"])
+            self.assertEqual(pair_report["quality_status"], "not_required")
+            self.assertEqual(pair_report["quality_outcome"], "not_judged")
+            self.assertEqual(pair_report["activation"]["status"], "unknown")
+            self.assertEqual(pair_report["calibration_status"], "not_run")
             self.assertEqual(pair_report["deterministic_comparison"], "treatment_only")
             self.assertTrue(pair_report["isolation"]["control_skill_absent"])
             self.assertTrue(pair_report["isolation"]["treatment_skill_present"])
@@ -430,6 +437,9 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertTrue((output / "codex-home").is_dir())
             self.assertFalse((output / "codex-home" / "auth.json").exists())
             self.assertNotIn("auth.json", (first_pair / "report.json").read_text(encoding="utf-8"))
+            markdown = (first_pair / "report.md").read_text(encoding="utf-8")
+            self.assertIn("Semantic quality was not judged.", markdown)
+            self.assertIn("Activation: unknown (telemetry_unavailable)", markdown)
 
     def test_live_run_copies_host_auth_json_only_during_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -470,7 +480,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 env=self.isolated_env(root, {"SIMPLE_FAKE_AUTH_LOG": str(auth_log)}),
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr)
             self.assertEqual(set(auth_log.read_text(encoding="utf-8").splitlines()), {"present"})
             self.assertTrue((output / "codex-home").is_dir())
             self.assertFalse((output / "codex-home" / "auth.json").exists())
@@ -513,7 +523,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 env=self.isolated_env(root, {"SIMPLE_FAKE_REPORTED_MODEL": "different-model"}),
             )
 
-            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertEqual(result.returncode, 2, result.stderr)
             self.assertFalse(json.loads(result.stdout)["valid"])
             pair_report = json.loads(
                 (output / "task-choice" / "trial-001" / "report.json").read_text(encoding="utf-8")
@@ -526,9 +536,22 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             result, output, report_path = self.run_live_rubric(Path(temporary))
 
             self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            self.assertTrue(summary["valid"])
+            self.assertEqual(summary["quality_status"], "provisional_non_independent")
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["rubric_status"], "provisional_non_independent")
             self.assertEqual(report["pairwise_status"], "provisional_non_independent")
+            self.assertEqual(report["quality_status"], "provisional_non_independent")
+            self.assertEqual(report["quality_outcome"], report["pairwise"][0]["winner_condition"])
+            self.assertEqual(report["activation"]["status"], "unknown")
+            self.assertEqual(report["calibration_status"], "not_run")
+            names = {item["name"] for item in report["dimension_results"]}
+            self.assertEqual(names, {"safe choice"})
+            markdown = (output / "task-choice" / "trial-001" / "report.md").read_text(encoding="utf-8")
+            self.assertIn("control / safe choice: met", markdown)
+            self.assertIn("treatment / safe choice: met", markdown)
+            self.assertIn("pairwise / safe choice:", markdown)
             pairwise = report["pairwise"][0]
             self.assertEqual(pairwise["status"], "provisional_non_independent")
             self.assertEqual(pairwise["winner_label"], "A")
@@ -567,9 +590,11 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                     Path(temporary), extra_env=environment
                 )
 
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.returncode, 1, result.stderr)
                 report = json.loads(report_path.read_text(encoding="utf-8"))
                 self.assertEqual(report["rubric_status"], "unknown")
+                self.assertEqual(report["quality_status"], "unknown")
+                self.assertEqual(report["quality_outcome"], "unknown")
                 self.assertEqual(
                     report["conditions"][0]["rubric_judgments"][0]["reason"],
                     expected_reason,
@@ -585,9 +610,10 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 extra_env={"SIMPLE_FAKE_INVOCATION_LOG": str(invocation_log)},
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr)
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["rubric_status"], "unknown")
+            self.assertEqual(report["quality_status"], "unknown")
             self.assertEqual(report["conditions"][0]["rubric_judgments"][0]["reason"], "same_model")
             self.assertEqual(invocation_log.read_text(encoding="utf-8").splitlines(), ["runner", "runner"])
 
@@ -601,9 +627,10 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 control_response=" ",
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr)
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["rubric_status"], "unknown")
+            self.assertEqual(report["quality_status"], "unknown")
             self.assertEqual(
                 report["conditions"][0]["rubric_judgments"][0]["reason"],
                 "deterministic_gate_failed",
@@ -622,16 +649,74 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 },
             )
 
-            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr)
             report = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(report["rubric_status"], "unknown")
             self.assertEqual(report["pairwise_status"], "unknown")
+            self.assertEqual(report["quality_status"], "unknown")
+            self.assertEqual(report["quality_outcome"], "unknown")
             self.assertEqual(report["pairwise"][0]["reason"], "per_output_unknown")
             self.assertFalse((output / "task-choice" / "trial-001" / "pairwise-001").exists())
             self.assertEqual(
                 invocation_log.read_text(encoding="utf-8").splitlines(),
                 ["runner", "runner", "judge", "judge"],
             )
+
+    def test_pairwise_tie_is_complete_quality_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, _, report_path = self.run_live_rubric(
+                Path(temporary),
+                extra_env={
+                    "SIMPLE_FAKE_PAIRWISE_RESPONSE": json.dumps(
+                        {
+                            "dimensions": [
+                                {
+                                    "name": "safe choice",
+                                    "evidence": "Both choose Blue.",
+                                    "winner": "tie",
+                                }
+                            ],
+                            "winner": "tie",
+                        }
+                    )
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["quality_status"], "provisional_non_independent")
+            self.assertEqual(report["quality_outcome"], "tie")
+            self.assertEqual(report["pairwise"][0]["winner_condition"], "tie")
+
+    def test_pairwise_dimension_disagreement_blocks_aggregate_winner(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, output, report_path = self.run_live_rubric(
+                Path(temporary),
+                extra_env={
+                    "SIMPLE_FAKE_PAIRWISE_RESPONSE": json.dumps(
+                        {
+                            "dimensions": [
+                                {
+                                    "name": "safe choice",
+                                    "evidence": "B is safer.",
+                                    "winner": "B",
+                                }
+                            ],
+                            "winner": "A",
+                        }
+                    )
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            pairwise = report["pairwise"][0]
+            self.assertEqual(report["quality_status"], "provisional_non_independent")
+            self.assertEqual(report["quality_outcome"], "inconsistent")
+            self.assertNotEqual(report["quality_outcome"], pairwise["winner_condition"])
+            markdown = (output / "task-choice" / "trial-001" / "report.md").read_text(encoding="utf-8")
+            self.assertIn("Quality outcome: inconsistent", markdown)
+            self.assertIn("pairwise / safe choice: B", markdown)
 
 
 if __name__ == "__main__":
