@@ -17,7 +17,14 @@ from typing import Any
 
 
 MAX_TASK_BYTES = 4 * 1024 * 1024
-SUPPORTED_GRADERS = {"regex", "not_regex", "file_exists", "json_equal", "rubric"}
+SUPPORTED_GRADERS = {
+    "regex",
+    "not_regex",
+    "file_exists",
+    "json_equal",
+    "response_not_empty",
+    "rubric",
+}
 
 
 def error(message: str) -> None:
@@ -45,6 +52,44 @@ def relative_workspace_path(value: Any, label: str) -> str:
     return path
 
 
+def parse_rubric_dimensions(raw: Any, label: str) -> list[dict[str, Any]]:
+    if not isinstance(raw, list) or not raw:
+        raise ValueError(f"{label} field dimensions: must be a non-empty array")
+    dimensions: list[dict[str, Any]] = []
+    names: set[str] = set()
+    for index, value in enumerate(raw):
+        dimension_label = f"{label} field dimensions[{index}]"
+        if not isinstance(value, dict):
+            raise ValueError(f"{dimension_label}: must be an object")
+        name = required_string(value.get("name"), f"{dimension_label} field name")
+        if name in names:
+            raise ValueError(f'{dimension_label} field name: duplicate value {name!r}')
+        levels = value.get("levels")
+        if not isinstance(levels, list) or len(levels) < 2:
+            raise ValueError(f"{dimension_label} field levels: must contain at least two entries")
+        parsed_levels: list[dict[str, str]] = []
+        level_names: set[str] = set()
+        for level_index, level in enumerate(levels):
+            level_label = f"{dimension_label} field levels[{level_index}]"
+            if not isinstance(level, dict):
+                raise ValueError(f"{level_label}: must be an object")
+            level_name = required_string(level.get("name"), f"{level_label} field name")
+            if level_name in level_names:
+                raise ValueError(f'{level_label} field name: duplicate value {level_name!r}')
+            parsed_levels.append(
+                {
+                    "name": level_name,
+                    "description": required_string(
+                        level.get("description"), f"{level_label} field description"
+                    ),
+                }
+            )
+            level_names.add(level_name)
+        dimensions.append({"name": name, "levels": parsed_levels})
+        names.add(name)
+    return dimensions
+
+
 def parse_grader(raw: Any, label: str) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"{label}: must be an object")
@@ -63,8 +108,8 @@ def parse_grader(raw: Any, label: str) -> dict[str, Any]:
         grader["path"] = relative_workspace_path(raw.get("path"), f"{label} field path")
         if grader_type == "json_equal" and "expected" not in raw:
             raise ValueError(f"{label} field expected: is required")
-    else:
-        grader["text"] = required_string(raw.get("text"), f"{label} field text")
+    elif grader_type == "rubric":
+        grader["dimensions"] = parse_rubric_dimensions(raw.get("dimensions"), label)
     return grader
 
 
@@ -94,6 +139,12 @@ def load_tasks(path: Path) -> list[dict[str, Any]]:
                 parse_grader(grader, f'task "{task_id}" field graders[{index}]')
                 for index, grader in enumerate(raw_graders)
             ]
+            if any(grader["type"] == "rubric" for grader in graders) and not any(
+                grader["type"] == "response_not_empty" for grader in graders
+            ):
+                raise ValueError(
+                    f'task "{task_id}": rubric graders require a response_not_empty preflight'
+                )
             task = dict(raw)
             task.update({"id": task_id, "prompt": prompt, "graders": graders})
             tasks.append(task)
@@ -199,6 +250,7 @@ def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
             "condition_order": "alternating_control_first",
             "tool_posture": "read_only",
         },
+        "task_snapshot": tasks,
         "counts": {
             "task_count": len(tasks),
             "paired_trials": paired_trials,
@@ -313,6 +365,10 @@ def same_json(left: Any, right: Any) -> bool:
 def grade_one(workspace: Path, response: str, grader: dict[str, Any]) -> dict[str, Any]:
     grader_type = grader["type"]
     result: dict[str, Any] = {"type": grader_type, "passed": False, "evidence": ""}
+    if grader_type == "response_not_empty":
+        result["passed"] = bool(response.strip())
+        result["evidence"] = "response is non-empty" if result["passed"] else "response is empty"
+        return result
     if grader_type in {"regex", "not_regex"}:
         match = re.search(grader["pattern"], response)
         if grader_type == "regex":

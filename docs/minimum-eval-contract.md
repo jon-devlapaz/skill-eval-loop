@@ -57,16 +57,23 @@ not change execution.
 
 The initial grader vocabulary is intentionally small:
 
+- `response_not_empty`: a deterministic response-presence preflight;
 - `regex`: the final response must match a pattern;
 - `not_regex`: the final response must not match a pattern;
 - `file_exists`: a workspace-relative final-state path must exist;
 - `json_equal`: a workspace-relative JSON file must equal an expected value;
-- `rubric`: an isolated judge returns `pass`, `fail`, or `unknown` against one
-  stated criterion.
+- `rubric`: an isolated judge assesses named dimensions against their locked,
+  descriptive levels.
 
 Deterministic outcome graders are preferred. Rubric graders are reserved for
 behavior that cannot be represented fairly as an outcome check. They are
 evidence, not ground truth, and require human calibration.
+
+Every rubric task requires a `response_not_empty` preflight. It establishes
+only that a response exists; it must not be interpreted as semantic quality.
+Each rubric contains a non-empty `dimensions` array. Every dimension has a
+unique non-empty name and at least two uniquely named levels with non-empty
+descriptions. The dry-run plan retains the validated task snapshot unchanged.
 
 ## Task ownership and missing suites
 

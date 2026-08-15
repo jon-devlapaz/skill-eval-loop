@@ -1,6 +1,6 @@
 # Trustworthy paired evaluation tasks
 
-- [ ] Task 1: Lock the qualitative task contract and target-owned suite source.
+- [x] Task 1: Lock the qualitative task contract and target-owned suite source.
 - [ ] Task 2: Establish auditable skill-activation evidence.
 - [ ] Checkpoint: approve evidence contract and independent judge choice.
 - [ ] Task 3: Add an independent judge adapter.

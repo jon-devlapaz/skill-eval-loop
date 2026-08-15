@@ -58,8 +58,25 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                         "id": "choice",
                         "prompt": "Choose Blue.",
                         "graders": [
-                            {"type": "regex", "pattern": "Blue"},
-                            {"type": "rubric", "text": "Choose the safe option."},
+                            {"type": "response_not_empty"},
+                            {
+                                "type": "rubric",
+                                "dimensions": [
+                                    {
+                                        "name": "safe choice",
+                                        "levels": [
+                                            {
+                                                "name": "not_met",
+                                                "description": "Does not choose the safe option.",
+                                            },
+                                            {
+                                                "name": "met",
+                                                "description": "Chooses the safe option.",
+                                            },
+                                        ],
+                                    }
+                                ],
+                            },
                         ],
                     }
                 )
@@ -94,7 +111,92 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertTrue(plan["valid"])
             self.assertFalse(plan["created_artifacts"])
             self.assertEqual(plan["counts"]["total_invocations"], 12)
+            self.assertEqual(
+                plan["task_snapshot"][0]["graders"][1]["dimensions"][0]["name"],
+                "safe choice",
+            )
             self.assertFalse(output.exists())
+
+    def test_dry_run_rejects_rubric_without_response_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"rubric","dimensions":[{"name":"choice","levels":[{"name":"not_met","description":"Wrong."},{"name":"met","description":"Right."}]}]}]}\n',
+                encoding="utf-8",
+            )
+
+            result = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(root / "new-run"),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+                "--judge-model",
+                "judge-model",
+                "--dry-run",
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("require a response_not_empty preflight", result.stderr)
+
+    def test_dry_run_rejects_invalid_rubric_dimensions(self) -> None:
+        cases = [
+            (
+                '{"type":"rubric"}',
+                "field dimensions: must be a non-empty array",
+            ),
+            (
+                '{"type":"rubric","dimensions":[{"name":"scope","levels":[{"name":"not_met","description":"No."},{"name":"met","description":"Yes."}]},{"name":"scope","levels":[{"name":"not_met","description":"No."},{"name":"met","description":"Yes."}]}]}',
+                "field name: duplicate value 'scope'",
+            ),
+            (
+                '{"type":"rubric","dimensions":[{"name":"scope","levels":[{"name":"met","description":"Yes."}]}]}',
+                "field levels: must contain at least two entries",
+            ),
+        ]
+        for rubric, expected_error in cases:
+            with self.subTest(expected_error=expected_error), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                skill = self.make_skill(root)
+                tasks = root / "tasks.jsonl"
+                tasks.write_text(
+                    '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"response_not_empty"},'
+                    + rubric
+                    + "]}\n",
+                    encoding="utf-8",
+                )
+
+                result = self.run_cli(
+                    "run",
+                    "--skill",
+                    str(skill),
+                    "--tasks",
+                    str(tasks),
+                    "--output",
+                    str(root / "new-run"),
+                    "--harness",
+                    "codex",
+                    "--harness-bin",
+                    str(FAKE_CODEX),
+                    "--model",
+                    "test-model",
+                    "--judge-model",
+                    "judge-model",
+                    "--dry-run",
+                )
+
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(expected_error, result.stderr)
 
     def test_dry_run_uses_target_owned_tasks_when_tasks_are_omitted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

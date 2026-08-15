@@ -26,10 +26,19 @@ Use newline-delimited JSON tasks. Each task needs a path-safe `id`, a non-empty
 {"id":"qualified-choice","prompt":"Choose the qualified candidate.","graders":[{"type":"regex","pattern":"(?i)\\bBlue\\b"}]}
 ```
 
-Use `regex` or `not_regex` for response checks. Use `file_exists` and
-`json_equal` only when the configured harness can create the stated workspace
-artifact. Keep unknown task metadata for human review; it does not affect
-execution.
+Use `response_not_empty` as the deterministic preflight for every qualitative
+rubric. It verifies that there is a response; it is not a quality score. A
+rubric contains named dimensions, each with at least two named descriptive
+levels:
+
+```json
+{"id":"scoped-change","prompt":"Make the smallest safe change.","graders":[{"type":"response_not_empty"},{"type":"rubric","dimensions":[{"name":"scope","levels":[{"name":"not_met","description":"Changes unrelated behavior."},{"name":"met","description":"Changes only the requested behavior."}]}]}]}
+```
+
+Use `regex` or `not_regex` only for genuinely machine-checkable response
+requirements. Use `file_exists` and `json_equal` only when the configured
+harness can create the stated workspace artifact. Keep unknown task metadata
+for human review; it does not affect execution.
 
 ## Find or author the suite
 

@@ -14,9 +14,11 @@ evaluation reports, or model outputs. Write only TARGET/evals/tasks.jsonl.
 
 Create at least three realistic, distinct JSONL tasks. Each task needs a unique
 path-safe id, a non-empty user prompt, and non-empty graders. Prefer observable
-outcomes; use a rubric only where a deterministic outcome cannot fairly measure
-the behavior. Do not ask the model to repeat the skill, reveal an expected
-answer in the prompt, or use regex as a proxy for qualitative quality.
+outcomes. For a qualitative task, include `{"type":"response_not_empty"}`
+and one rubric with named dimensions. Each dimension has at least two named
+levels, each with a non-empty description. Do not ask the model to repeat the
+skill, reveal an expected answer in the prompt, or use regex as a proxy for
+qualitative quality.
 
 Make no live or paid model calls. Do not edit TARGET outside evals. Return only
 the path written, task count, validation status, and any blocking fact.
