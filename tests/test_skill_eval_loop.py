@@ -574,14 +574,29 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 self.assertEqual(judgment["dimensions"][0]["level"], "met")
                 self.assertEqual(judgment["execution"]["requested_model"], "gpt-5.6-sol")
                 self.assertEqual(judgment["execution"]["trace_reported_model"], "gpt-5.6-sol")
+                self.assertEqual(judgment["execution"]["model_identity_source"], "trace_reported")
                 judge_dir = output / "task-choice" / "trial-001" / condition["name"] / "judge-001"
                 self.assertTrue((judge_dir / "trace.jsonl").is_file())
                 self.assertTrue((judge_dir / "response.txt").is_file())
 
+    def test_live_rubric_judge_keeps_missing_trace_model_unattested(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, _, report_path = self.run_live_rubric(
+                Path(temporary), extra_env={"SIMPLE_FAKE_JUDGE_OMIT_MODEL": "1"}
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["quality_status"], "provisional_non_independent")
+            judgment = report["conditions"][0]["rubric_judgments"][0]
+            self.assertEqual(judgment["status"], "provisional_non_independent")
+            self.assertEqual(judgment["execution"]["trace_reported_model"], "")
+            self.assertEqual(judgment["execution"]["model_identity_source"], "cli_configured")
+            self.assertIsNone(judgment["execution"]["model_matches_requested"])
+
     def test_live_rubric_judge_fails_closed_for_bad_output_or_identity(self) -> None:
         cases = [
             ({"SIMPLE_FAKE_JUDGE_RESPONSE": "not-json"}, "malformed_output"),
-            ({"SIMPLE_FAKE_JUDGE_OMIT_MODEL": "1"}, "model_identity_missing"),
             ({"SIMPLE_FAKE_JUDGE_REPORTED_MODEL": "gpt-5.4"}, "model_identity_mismatch"),
             ({"SIMPLE_FAKE_JUDGE_SLEEP_SECONDS": "2"}, "timed_out"),
         ]

@@ -816,6 +816,7 @@ def invoke_judge(
             "duration_ms": duration_ms,
             "requested_model": configuration["judge_model"],
             "trace_reported_model": reported_model,
+            "model_identity_source": "trace_reported" if reported_model else "cli_configured",
             "model_matches_requested": model_matches,
             "input_tokens": observed["input_tokens"],
             "output_tokens": observed["output_tokens"],
@@ -832,9 +833,7 @@ def invoke_judge(
         result["reason"] = "timed_out"
     elif exit_code != 0:
         result["reason"] = "judge_failed"
-    elif not reported_model:
-        result["reason"] = "model_identity_missing"
-    elif not model_matches:
+    elif reported_model and not model_matches:
         result["reason"] = "model_identity_mismatch"
     return result, observed["response"]
 
