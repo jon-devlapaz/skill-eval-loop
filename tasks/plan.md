@@ -26,6 +26,9 @@ control/treatment baseline, semantic grading, multi-dimensional rubrics,
 - Treat availability of the exact hashed skill payload as the intervention.
   Activation telemetry is optional diagnostic evidence, not a quality score or
   a gate on the outcome comparison.
+- Give each live run a private Codex home under `$output/codex-home`. Copy
+  only `~/.codex/auth.json` when present. Do not reuse the user's Codex home
+  as the experiment environment.
 
 ## Dependency graph
 
@@ -33,11 +36,12 @@ control/treatment baseline, semantic grading, multi-dimensional rubrics,
 Task 1: locked rubric contract ───────────┐
 approved provisional OpenAI judge ──────┴── Task 3: judge adapter
                                                    │
-                                                   └── Task 4: blinded comparison
-                                                              │
-                                                              └── Task 5: reporting
-                                                                         │
-                                                                         └── Task 6: calibration
+Task 3b: run-local Codex home ─────────────────────┤
+                                                   ├── Task 4: blinded comparison
+                                                   │          │
+                                                   │          └── Task 5: reporting
+                                                   │                     │
+                                                   └─────────────────────┴── Task 6: calibration
 
 Task 2: intervention semantics (resolved; no downstream gate)
 ```
@@ -149,6 +153,38 @@ verification remains part of the later authorized pilot.
 
 **Estimated scope:** M (3-4 files).
 
+## Task 3b: Isolate the live Codex home
+
+**Description:** Stop using the host `~/.codex` as the experiment home. Create
+`$output/codex-home` for control, treatment, and judge, copy only
+`~/.codex/auth.json` when that file exists, and keep installing the treatment
+skill in the trial workspace. Dry-run and fake-harness runs must not require a
+host Codex home. Land this before any authorized live Codex run.
+
+**Acceptance criteria:**
+- [ ] A live run sets subprocess `CODEX_HOME` to `$output/codex-home` and does
+  not consult host `CODEX_HOME/skills`.
+- [ ] The run-local home contains copied `auth.json` only when the host file
+  exists; skills, sessions, and `config.toml` are not copied.
+- [ ] Dry-run and fake live tests pass without a pre-created authenticated
+  host Codex home.
+
+**Verification:**
+- [ ] Tests pass: `python3 -m unittest discover -s tests -v`.
+- [ ] Focused tests assert the subprocess `CODEX_HOME` path and that fake
+  runs no longer need `CODEX_HOME` in the caller environment.
+- [ ] Manual check: one authorized live exec with only copied `auth.json`
+  remains deferred to the later pilot.
+
+**Dependencies:** Task 3.
+
+**Files likely touched:**
+- `skills/skill-eval-loop/scripts/skill_eval_loop.py`
+- `tests/test_skill_eval_loop.py`
+- `skills/skill-eval-loop/SKILL.md`
+
+**Estimated scope:** S (2-3 files).
+
 ## Task 4: Add blinded pairwise comparison
 
 **Description:** Present anonymized candidate outputs to the judge after
@@ -180,9 +216,10 @@ report.
 
 ### Checkpoint: Quality path
 
-- [ ] Tasks 3 and 4 are complete.
+- [ ] Tasks 3, 3b, and 4 are complete.
 - [ ] A deterministic failure cannot be judged.
 - [ ] A valid pair produces anonymous rubric evidence and a restored report.
+- [ ] Live Codex uses `$output/codex-home`, not the host `~/.codex`.
 - [ ] Human reviews the first raw judge artifact before more live runs.
 
 ### Phase 3: Calibrate and prove the six capabilities together
@@ -238,7 +275,7 @@ then run one real paired pilot only if calibration accepts the chosen judge.
 - [ ] Manual check: human reviews calibration disagreements and the pilot
   transcripts before accepting the result.
 
-**Dependencies:** Tasks 1 through 5.
+**Dependencies:** Tasks 1 through 5 and Task 3b.
 
 **Files likely touched:**
 - `tests/fixtures/`
@@ -267,6 +304,8 @@ then run one real paired pilot only if calibration accepts the chosen judge.
 | Judge prompt leaks condition labels | High | Build prompt from anonymized candidates and test the raw payload. |
 | Rubric is gamed or too vague | High | Lock it before runs and calibrate against human-labeled cases. |
 | Pilot is saturated or too small | Medium | Report tie/no-signal and expand only after calibration. |
+| Host Codex home leaks extra skills | High | Use a run-local `$output/codex-home` and copy only `auth.json`. |
+| Copied `auth.json` is published as evidence | High | Treat it as runtime-only; keep it out of reports and condition artifacts. |
 
 ## Open questions
 

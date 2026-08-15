@@ -4,6 +4,7 @@
 - [x] Task 2: Confirm exact skill availability as the intervention.
 - [x] Checkpoint: approve evidence contract and provisional OpenAI judge choice.
 - [x] Task 3: Add a provisional Codex judge path.
+- [ ] Task 3b: Isolate the live Codex home from the host user directory.
 - [ ] Task 4: Add blinded pairwise comparison.
 - [ ] Checkpoint: review the first raw judge artifact.
 - [ ] Task 5: Make the report and exit status quality-aware.

@@ -120,6 +120,24 @@ The first Codex implementation is deliberately direct. A shared harness
 abstraction is not justified until a second real harness demonstrates common
 behavior.
 
+## Codex home isolation
+
+The experiment Codex home is not the user's `~/.codex`. A live run creates
+`$output/codex-home` and sets `CODEX_HOME` to that directory for control,
+treatment, and judge. Place it under the output directory, not the OS temp
+directory: some Codex builds refuse a temp-dir home.
+
+If `~/.codex/auth.json` exists, copy only that file into the run-local home.
+Do not copy skills, sessions, or `config.toml`. Copied credentials are
+runtime-only. They are not retained evidence and must not appear in reports.
+Dry-run and fake-harness runs must not require an authenticated host Codex
+home.
+
+The treatment skill remains a workspace payload at `.agents/skills/<name>`.
+Host `CODEX_HOME/skills` is not the intervention and is not consulted. A
+same-name skill in the user's Codex home is not a runner gate once the
+experiment uses a run-local home.
+
 ## Dry-run accounting
 
 Dry-run validates consumed inputs and prints the complete plan without creating
@@ -212,7 +230,9 @@ The minimum reference does not initially include:
 - multiple judges;
 - blinded pairwise judging and position swapping;
 - autonomous skill selection;
-- Claude Code, Pi, or Hermes adapters.
+- Claude Code, Pi, or Hermes adapters;
+- container runners, Harbor, or per-condition Codex homes;
+- API-key versus OAuth login menus.
 
 These capabilities can return only after an observed requirement or repeated
 failure justifies their complexity.
