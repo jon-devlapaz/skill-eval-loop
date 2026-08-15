@@ -119,6 +119,11 @@ traces, and stderr. Confirm the control lacks the target skill, the treatment
 contains the source hash, and any trace-reported model identity agrees with the
 requested model.
 
+A live run creates `$output/codex-home` and points Codex at that directory.
+If `~/.codex/auth.json` exists, it is copied there for the process and removed
+afterward. Do not treat that file as retained evidence. Host Codex skills are
+not part of the intervention.
+
 Treat access to the exact hashed payload as the intervention. A trace may help
 explain how Codex used that access, but missing activation telemetry does not
 invalidate the outcome comparison or become a quality score. Phrase the result

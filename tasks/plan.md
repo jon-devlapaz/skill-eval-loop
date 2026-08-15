@@ -162,21 +162,24 @@ skill in the trial workspace. Dry-run and fake-harness runs must not require a
 host Codex home. Land this before any authorized live Codex run.
 
 **Acceptance criteria:**
-- [ ] A live run sets subprocess `CODEX_HOME` to `$output/codex-home` and does
+- [x] A live run sets subprocess `CODEX_HOME` to `$output/codex-home` and does
   not consult host `CODEX_HOME/skills`.
-- [ ] The run-local home contains copied `auth.json` only when the host file
+- [x] The run-local home contains copied `auth.json` only when the host file
   exists; skills, sessions, and `config.toml` are not copied.
-- [ ] Dry-run and fake live tests pass without a pre-created authenticated
+- [x] Dry-run and fake live tests pass without a pre-created authenticated
   host Codex home.
 
 **Verification:**
-- [ ] Tests pass: `python3 -m unittest discover -s tests -v`.
-- [ ] Focused tests assert the subprocess `CODEX_HOME` path and that fake
+- [x] Tests pass: `python3 -m unittest discover -s tests -v`.
+- [x] Focused tests assert the subprocess `CODEX_HOME` path and that fake
   runs no longer need `CODEX_HOME` in the caller environment.
 - [ ] Manual check: one authorized live exec with only copied `auth.json`
   remains deferred to the later pilot.
 
 **Dependencies:** Task 3.
+
+**Result:** Implementation complete with fake-adapter evidence. Live provider
+verification remains part of the later authorized pilot.
 
 **Files likely touched:**
 - `skills/skill-eval-loop/scripts/skill_eval_loop.py`
