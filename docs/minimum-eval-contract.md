@@ -211,6 +211,29 @@ not change runner validity. A failed per-output judgment makes pairwise status
 Human calibration remains a separate requirement before a comparative quality
 claim.
 
+## Reports and exit status
+
+Pair reports separate runner validity, activation, deterministic comparison,
+per-output rubric status, pairwise status, quality completeness, quality
+outcome, and calibration. `run.json` repeats the rolled-up runner validity and
+quality status. Activation is `unknown` with reason `telemetry_unavailable`
+until a later telemetry source exists. Calibration is `not_run` until
+calibration evidence exists.
+
+`quality_status` is `not_required` when no rubric is present, `unknown` when
+any required judgment is unknown, and `provisional_non_independent` when every
+required judgment succeeded. `quality_outcome` lists every dimension through
+`dimension_results` and is never a restored winner when a pairwise dimension
+disagrees with the overall winner (`inconsistent`) or when quality is unknown
+or not judged. Deterministic-only Markdown reports state that semantic quality
+was not judged.
+
+Process exit status distinguishes those cases:
+
+- `0`: runner valid and quality evidence complete;
+- `1`: runner valid, but quality unknown or not judged;
+- `2`: runner invalid.
+
 ## Runner acceptance versus skill quality
 
 **Runner acceptance** means the evaluator held the declared variables fixed,

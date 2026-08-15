@@ -63,6 +63,16 @@ JSON/Markdown report for every pair.
 checks. It is not a general quality claim. Read both transcripts before
 interpreting `treatment_only`, `both_pass`, `control_only`, or `both_fail`.
 
+JSON and Markdown reports also expose activation (currently unknown),
+calibration (`not_run`), every judged dimension, `quality_status`, and
+`quality_outcome`. Deterministic-only reports say semantic quality was not
+judged. An overall pairwise winner is not a quality pass when any dimension is
+unknown or disagrees with that winner.
+
+Live exit status is `0` when quality evidence is complete, `1` when the runner
+is valid but quality is unknown or was not judged, and `2` when the runner is
+invalid.
+
 ## Boundaries
 
 The minimum runner supports Codex, deterministic graders, a provisional

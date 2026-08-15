@@ -222,10 +222,10 @@ restored-report review remains part of the later authorized pilot.
 
 ### Checkpoint: Quality path
 
-- [ ] Tasks 3, 3b, and 4 are complete.
-- [ ] A deterministic failure cannot be judged.
-- [ ] A valid pair produces anonymous rubric evidence and a restored report.
-- [ ] Live Codex uses `$output/codex-home`, not the host `~/.codex`.
+- [x] Tasks 3, 3b, and 4 are complete.
+- [x] A deterministic failure cannot be judged.
+- [x] A valid pair produces anonymous rubric evidence and a restored report.
+- [x] Live Codex uses `$output/codex-home`, not the host `~/.codex`.
 - [ ] Human reviews the first raw judge artifact before more live runs.
 
 ### Phase 3: Calibrate and prove the six capabilities together
@@ -238,20 +238,23 @@ in JSON and Markdown reports. Prevent an aggregate outcome from hiding a
 critical failed or unknown dimension.
 
 **Acceptance criteria:**
-- [ ] Reports expose every dimension and its status; no single aggregate can
+- [x] Reports expose every dimension and its status; no single aggregate can
   convert an unknown or critical failure into a quality pass.
-- [ ] Exit status distinguishes invalid runner, valid-but-unknown quality, and
+- [x] Exit status distinguishes invalid runner, valid-but-unknown quality, and
   complete quality evidence.
-- [ ] Existing deterministic-only reports remain readable and explicitly say
+- [x] Existing deterministic-only reports remain readable and explicitly say
   semantic quality was not judged.
 
 **Verification:**
-- [ ] Tests pass: `python3 -m unittest discover -s tests -v`.
-- [ ] Focused report fixtures cover pass, tie, failed critical dimension,
+- [x] Tests pass: `python3 -m unittest discover -s tests -v`.
+- [x] Focused report fixtures cover pass, tie, failed critical dimension,
   unavailable judge, and activation unknown.
 - [ ] Manual check: inspect JSON and Markdown reports for the same pair.
 
 **Dependencies:** Tasks 2, 3, and 4.
+
+**Result:** Implementation complete with fake-adapter evidence. Live report
+inspection remains part of the later authorized pilot.
 
 **Files likely touched:**
 - `skills/skill-eval-loop/scripts/skill_eval_loop.py`

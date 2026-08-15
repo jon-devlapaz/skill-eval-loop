@@ -106,14 +106,26 @@ Treat `runner_valid` and the deterministic comparison separately. A valid
 runner may show `both_pass`, `both_fail`, `control_only`, or `treatment_only`.
 Read both responses before making a quality claim.
 
-For rubric tasks, inspect each condition's `rubric_judgments` and the pair's
-`pairwise` evidence. A successful Codex judgment is labeled
-`provisional_non_independent`. A timeout, failed deterministic gate, malformed
-response, missing or mismatched judge identity, or identical runner and judge
-model produces `unknown`. Pairwise comparison runs only after both per-output
-judgments succeed. The pairwise prompt uses `A` and `B`; the report restores
-control and treatment. Pairwise status is quality evidence, not runner
-validity. The runner does not turn unknown cases into a quality pass.
+For rubric tasks, inspect each condition's `rubric_judgments`, the pair's
+`pairwise` evidence, and `dimension_results`. A successful Codex judgment is
+labeled `provisional_non_independent`. A timeout, failed deterministic gate,
+malformed response, missing or mismatched judge identity, or identical runner
+and judge model produces `unknown`. Pairwise comparison runs only after both
+per-output judgments succeed. The pairwise prompt uses `A` and `B`; the report
+restores control and treatment. Pairwise status is quality evidence, not
+runner validity.
+
+`quality_status` is evidence completeness. `quality_outcome` is `not_judged`
+when there is no rubric, `unknown` when any required judgment is unknown,
+`tie` when the restored winner is a tie, `inconsistent` when a pairwise
+dimension disagrees with the overall winner, or the restored winner condition.
+An overall winner is never a quality pass when a dimension is unknown or
+disagrees. Activation is reported as unknown because Codex telemetry is not
+scored. Calibration stays `not_run` until a later calibration step.
+
+Process exit status is `0` for complete provisional quality evidence, `1` when
+the runner is valid but quality is unknown or was not judged, and `2` when the
+runner is invalid.
 
 ## Inspect retained evidence
 

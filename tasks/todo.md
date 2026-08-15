@@ -7,6 +7,6 @@
 - [x] Task 3b: Isolate the live Codex home from the host user directory.
 - [x] Task 4: Add blinded pairwise comparison.
 - [ ] Checkpoint: review the first raw judge artifact.
-- [ ] Task 5: Make the report and exit status quality-aware.
+- [x] Task 5: Make the report and exit status quality-aware.
 - [ ] Task 6: Calibrate with known outcomes and run one real pilot.
 - [ ] Checkpoint: verify all six capabilities.
