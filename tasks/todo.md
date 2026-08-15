@@ -6,7 +6,7 @@
 - [x] Task 3: Add a provisional Codex judge path.
 - [x] Task 3b: Isolate the live Codex home from the host user directory.
 - [x] Task 4: Add blinded pairwise comparison.
-- [ ] Checkpoint: review the first raw judge artifact.
+- [x] Checkpoint: review the first raw judge artifact.
 - [x] Task 5: Make the report and exit status quality-aware.
-- [x] Task 6: Calibrate with known outcomes (live pilot deferred).
+- [x] Task 6: Calibrate with known outcomes; one-task live pilot recorded.
 - [ ] Checkpoint: verify all six capabilities.

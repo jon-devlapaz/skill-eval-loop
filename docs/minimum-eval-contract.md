@@ -193,9 +193,11 @@ concrete response evidence and exactly one declared level. The runner retains
 the raw trace, raw response, stderr, timing, usage when reported, requested
 model, and trace-reported model.
 
-The judge fails closed to `unknown` for a timeout, process failure, missing or
+The judge fails closed to `unknown` for a timeout, process failure, a
 mismatched trace-reported identity, malformed dimensions, or an identical
-runner and judge model. A structurally valid Codex judgment from a different
+runner and judge model. When the trace does not report a model, the requested
+judge model is recorded as unattested CLI configuration rather than a failed
+judgment. A structurally valid Codex judgment from a different
 OpenAI model is labeled `provisional_non_independent`; model separation within
 one provider or family is not independent evaluation.
 

@@ -53,6 +53,7 @@ For rubric tasks, also pass `--judge-model` with a different exact model
 identifier. The runner judges each condition only after deterministic gates
 pass. A valid same-provider judgment is `provisional_non_independent`; a
 timeout, failed gate, malformed response, or identity mismatch is `unknown`.
+A missing trace-reported model is unattested, not a quality unknown.
 
 The runner invokes Codex sequentially in read-only mode. Odd trials run
 control first; even trials run treatment first. It retains `run.json`, the

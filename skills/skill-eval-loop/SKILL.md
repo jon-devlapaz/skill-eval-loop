@@ -135,11 +135,12 @@ Read both responses before making a quality claim.
 For rubric tasks, inspect each condition's `rubric_judgments`, the pair's
 `pairwise` evidence, and `dimension_results`. A successful Codex judgment is
 labeled `provisional_non_independent`. A timeout, failed deterministic gate,
-malformed response, missing or mismatched judge identity, or identical runner
-and judge model produces `unknown`. Pairwise comparison runs only after both
-per-output judgments succeed. The pairwise prompt uses `A` and `B`; the report
-restores control and treatment. Pairwise status is quality evidence, not
-runner validity.
+malformed response, mismatched judge identity, or identical runner and judge
+model produces `unknown`. If the trace does not report a model, the requested
+judge model is recorded as unattested CLI configuration. Pairwise comparison
+runs only after both per-output judgments succeed. The pairwise prompt uses
+`A` and `B`; the report restores control and treatment. Pairwise status is
+quality evidence, not runner validity.
 
 `quality_status` is evidence completeness. `quality_outcome` is `not_judged`
 when there is no rubric, `unknown` when any required judgment is unknown,

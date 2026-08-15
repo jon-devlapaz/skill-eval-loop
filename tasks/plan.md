@@ -226,7 +226,7 @@ restored-report review remains part of the later authorized pilot.
 - [x] A deterministic failure cannot be judged.
 - [x] A valid pair produces anonymous rubric evidence and a restored report.
 - [x] Live Codex uses `$output/codex-home`, not the host `~/.codex`.
-- [ ] Human reviews the first raw judge artifact before more live runs.
+- [x] Human reviews the first raw judge artifact before more live runs.
 
 ### Phase 3: Calibrate and prove the six capabilities together
 
@@ -275,20 +275,24 @@ then run one real paired pilot only if calibration accepts the chosen judge.
   human rationale.
 - [x] The selected judge agrees with the locked labels at the human-approved
   threshold and reports disagreements.
-- [ ] A real pilot reports all six capabilities separately and avoids a broad
+- [x] A real pilot reports all six capabilities separately and avoids a broad
   skill-quality claim from one task.
 
 **Verification:**
 - [x] Tests pass: `python3 -m unittest discover -s tests -v`.
 - [x] Calibration command produces retained structured evidence.
-- [ ] Manual check: human reviews calibration disagreements and the pilot
+- [x] Manual check: human reviews calibration disagreements and the pilot
   transcripts before accepting the result.
 
 **Dependencies:** Tasks 1 through 5 and Task 3b.
 
-**Result:** Calibration command and v1 fixtures are complete with fake-adapter
-evidence. The default threshold is all three locked cases. An authorized live
-calibrate and one paired pilot remain deferred.
+**Result:** Calibration command and v1 fixtures are complete. Live `gpt-5.6-sol`
+calibration against the locked cases accepted 3/3 with no disagreements.
+Codex 0.147.0 `exec --json` traces do not report a model; missing identity is
+unattested CLI configuration, not a failed judgment. One paired live pilot
+reported runner validity, activation unknown, deterministic both_pass, per-
+dimension rubric scores, and a blinded pairwise tie. That is not a skill-
+quality claim. Judge evidence remains same-provider and non-independent.
 
 **Files likely touched:**
 - `tests/fixtures/`
