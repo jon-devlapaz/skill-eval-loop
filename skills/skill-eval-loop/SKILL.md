@@ -106,11 +106,14 @@ Treat `runner_valid` and the deterministic comparison separately. A valid
 runner may show `both_pass`, `both_fail`, `control_only`, or `treatment_only`.
 Read both responses before making a quality claim.
 
-For rubric tasks, inspect each condition's `rubric_judgments`. A successful
-Codex judgment is labeled `provisional_non_independent`. A timeout, failed
-deterministic gate, malformed response, missing or mismatched judge identity,
-or identical runner and judge model produces `unknown`. The runner does not
-turn those cases into a quality pass.
+For rubric tasks, inspect each condition's `rubric_judgments` and the pair's
+`pairwise` evidence. A successful Codex judgment is labeled
+`provisional_non_independent`. A timeout, failed deterministic gate, malformed
+response, missing or mismatched judge identity, or identical runner and judge
+model produces `unknown`. Pairwise comparison runs only after both per-output
+judgments succeed. The pairwise prompt uses `A` and `B`; the report restores
+control and treatment. Pairwise status is quality evidence, not runner
+validity. The runner does not turn unknown cases into a quality pass.
 
 ## Inspect retained evidence
 

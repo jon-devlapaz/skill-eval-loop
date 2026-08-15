@@ -196,19 +196,22 @@ the judge prompt, then reveal it only in retained evidence and the final
 report.
 
 **Acceptance criteria:**
-- [ ] The judge input contains neither `control` nor `treatment` labels.
-- [ ] The judge returns per-dimension scores and `A`, `B`, or `tie` with
+- [x] The judge input contains neither `control` nor `treatment` labels.
+- [x] The judge returns per-dimension scores and `A`, `B`, or `tie` with
   evidence tied to the locked rubric.
-- [ ] The report restores the mapping and labels pairwise status as quality
+- [x] The report restores the mapping and labels pairwise status as quality
   evidence rather than runner validity.
 
 **Verification:**
-- [ ] Tests pass: `python3 -m unittest discover -s tests -v`.
-- [ ] Focused tests prove condition labels cannot enter the judge payload.
+- [x] Tests pass: `python3 -m unittest discover -s tests -v`.
+- [x] Focused tests prove condition labels cannot enter the judge payload.
 - [ ] Manual check: compare the retained blind prompt, raw judgment, and
   restored report.
 
 **Dependencies:** Tasks 1 and 3.
+
+**Result:** Implementation complete with fake-adapter evidence. Live prompt and
+restored-report review remains part of the later authorized pilot.
 
 **Files likely touched:**
 - `skills/skill-eval-loop/scripts/skill_eval_loop.py`

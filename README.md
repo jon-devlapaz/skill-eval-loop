@@ -65,10 +65,10 @@ interpreting `treatment_only`, `both_pass`, `control_only`, or `both_fail`.
 
 ## Boundaries
 
-The minimum runner supports Codex, deterministic graders, and a provisional
-same-provider rubric judge. It does not provide blinded pairwise comparison,
-independent judging, pricing, parallel execution, provider discovery, or
-adapters for other harnesses.
+The minimum runner supports Codex, deterministic graders, a provisional
+same-provider rubric judge, and blinded pairwise comparison. It does not
+provide independent judging, pricing, parallel execution, provider discovery,
+or adapters for other harnesses.
 
 ## Development
 

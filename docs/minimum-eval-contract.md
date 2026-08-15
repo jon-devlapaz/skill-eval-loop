@@ -146,10 +146,12 @@ artifacts or calling a provider.
 For `t` tasks and `n` trials:
 
 ```text
-paired trials      = t x n
-target invocations = 2 x t x n
-judge invocations  = 2 x n x total rubric graders across all tasks
-total invocations  = target invocations + judge invocations
+paired trials                 = t x n
+target invocations            = 2 x t x n
+per-output judge invocations  = 2 x n x total rubric graders across all tasks
+pairwise judge invocations    = n x total rubric graders across all tasks
+judge invocations             = per-output + pairwise
+total invocations             = target invocations + judge invocations
 ```
 
 The golden fixture contains two tasks, three trials, and one rubric grader:
@@ -157,8 +159,8 @@ The golden fixture contains two tasks, three trials, and one rubric grader:
 ```text
 paired trials      = 6
 target invocations = 12
-judge invocations  = 6
-total invocations  = 18
+judge invocations  = 9
+total invocations  = 21
 ```
 
 Provider calls inside a harness invocation may differ when the harness uses
@@ -197,9 +199,17 @@ runner and judge model. A structurally valid Codex judgment from a different
 OpenAI model is labeled `provisional_non_independent`; model separation within
 one provider or family is not independent evaluation.
 
-This per-output judgment does not yet choose between the paired responses.
-Blinded pairwise comparison, position swapping, and human calibration remain
-separate requirements before a comparative quality claim.
+After both per-output judgments succeed, the runner presents the two responses
+as anonymized candidates `A` and `B`. The mapping from those labels to
+control and treatment is chosen per trial, kept outside the judge prompt, and
+restored only in retained evidence. The pairwise prompt contains neither
+`control` nor `treatment` labels. The judge returns per-dimension `A`, `B`,
+or `tie` plus an overall winner. Pairwise status is quality evidence; it does
+not change runner validity. A failed per-output judgment makes pairwise status
+`unknown` and makes no pairwise call.
+
+Human calibration remains a separate requirement before a comparative quality
+claim.
 
 ## Runner acceptance versus skill quality
 
@@ -228,7 +238,6 @@ The minimum reference does not initially include:
 - automatic model discovery or pricing;
 - parallel execution;
 - multiple judges;
-- blinded pairwise judging and position swapping;
 - autonomous skill selection;
 - Claude Code, Pi, or Hermes adapters;
 - container runners, Harbor, or per-condition Codex homes;

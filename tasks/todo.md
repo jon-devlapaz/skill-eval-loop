@@ -5,7 +5,7 @@
 - [x] Checkpoint: approve evidence contract and provisional OpenAI judge choice.
 - [x] Task 3: Add a provisional Codex judge path.
 - [x] Task 3b: Isolate the live Codex home from the host user directory.
-- [ ] Task 4: Add blinded pairwise comparison.
+- [x] Task 4: Add blinded pairwise comparison.
 - [ ] Checkpoint: review the first raw judge artifact.
 - [ ] Task 5: Make the report and exit status quality-aware.
 - [ ] Task 6: Calibrate with known outcomes and run one real pilot.
