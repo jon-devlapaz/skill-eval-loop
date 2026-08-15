@@ -12,10 +12,12 @@ if [ "${1:-}" != "exec" ]; then
 fi
 
 model=''
+prompt=''
 previous=''
 for argument in "$@"; do
   if [ "$previous" = "--model" ]; then model=$argument; fi
   previous=$argument
+  prompt=$argument
 done
 
 role=${SKILL_EVAL_ROLE:-runner}
@@ -42,6 +44,26 @@ if [ "$judge_like" -eq 1 ]; then
     response='{"dimensions":[{"name":"safe choice","evidence":"A chooses Blue.","winner":"A"}],"winner":"A"}'
     if [ -n "${SIMPLE_FAKE_PAIRWISE_RESPONSE+x}" ]; then
       response=$SIMPLE_FAKE_PAIRWISE_RESPONSE
+    elif [ -n "${SIMPLE_FAKE_PAIRWISE_COMPARE:-}" ]; then
+      response=$(python3 -c '
+import json, sys
+payload = json.loads(sys.argv[1].split("\n\n", 1)[1])
+left = payload["candidate_A"].strip()
+right = payload["candidate_B"].strip()
+name = payload["dimensions"][0]["name"]
+if left == right:
+    winner = "tie"
+elif "Blue" in left and "Blue" not in right:
+    winner = "A"
+elif "Blue" in right and "Blue" not in left:
+    winner = "B"
+else:
+    winner = "A"
+print(json.dumps({
+    "dimensions": [{"name": name, "evidence": "Compared candidate text.", "winner": winner}],
+    "winner": winner,
+}))
+' "$prompt")
     fi
   else
     response='{"dimensions":[{"name":"safe choice","level":"met","evidence":"The response chooses the safe option."}]}'

@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 EVALUATOR = ROOT / "skills" / "skill-eval-loop" / "scripts" / "skill_eval_loop.py"
 LAUNCHER = ROOT / "skills" / "skill-eval-loop" / "scripts" / "skill-eval-loop"
 FAKE_CODEX = ROOT / "tests" / "fixtures" / "simple-fake-codex"
+CALIBRATION_FIXTURES = ROOT / "tests" / "fixtures" / "calibration" / "v1.json"
 
 
 class SkillEvalLoopCliTests(unittest.TestCase):
@@ -115,7 +116,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
         result = self.run_cli("healthcheck", "--skill-dir", str(EVALUATOR.parents[1]))
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout)["commands"], ["healthcheck", "run"])
+        self.assertEqual(json.loads(result.stdout)["commands"], ["healthcheck", "run", "calibrate"])
 
     def test_public_launcher_needs_only_python3(self) -> None:
         result = subprocess.run(
@@ -717,6 +718,100 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             markdown = (output / "task-choice" / "trial-001" / "report.md").read_text(encoding="utf-8")
             self.assertIn("Quality outcome: inconsistent", markdown)
             self.assertIn("pairwise / safe choice: B", markdown)
+
+    def run_calibrate(
+        self,
+        root: Path,
+        *,
+        extra_env: dict[str, str] | None = None,
+        dry_run: bool = False,
+        judge_model: str = "gpt-5.6-sol",
+    ) -> tuple[subprocess.CompletedProcess[str], Path]:
+        output = root / "calibration-run"
+        arguments = [
+            "python3",
+            str(EVALUATOR),
+            "calibrate",
+            "--fixtures",
+            str(CALIBRATION_FIXTURES),
+            "--output",
+            str(output),
+            "--harness",
+            "codex",
+            "--harness-bin",
+            str(FAKE_CODEX),
+            "--model",
+            "gpt-5.6-terra",
+            "--judge-model",
+            judge_model,
+            "--timeout-seconds",
+            "1",
+        ]
+        if dry_run:
+            arguments.append("--dry-run")
+        result = subprocess.run(
+            arguments,
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+            env=self.isolated_env(root, extra_env),
+        )
+        return result, output
+
+    def test_calibrate_dry_run_validates_fixtures_without_creating_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, output = self.run_calibrate(Path(temporary), dry_run=True)
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plan = json.loads(result.stdout)
+            self.assertTrue(plan["valid"])
+            self.assertFalse(plan["created_artifacts"])
+            self.assertEqual(plan["counts"]["total_invocations"], 3)
+            self.assertEqual(
+                [case["id"] for case in plan["suite"]["cases"]],
+                ["known-better", "known-worse", "tie"],
+            )
+            self.assertTrue(all(case["rationale"] for case in plan["suite"]["cases"]))
+            self.assertFalse(output.exists())
+
+    def test_calibrate_accepts_when_judge_matches_locked_labels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, output = self.run_calibrate(
+                Path(temporary), extra_env={"SIMPLE_FAKE_PAIRWISE_COMPARE": "1"}
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            summary = json.loads(result.stdout)
+            self.assertTrue(summary["valid"])
+            self.assertTrue(summary["accepted"])
+            self.assertEqual(summary["agreements"], 3)
+            self.assertEqual(summary["disagreements"], [])
+            retained = json.loads((output / "calibration.json").read_text(encoding="utf-8"))
+            self.assertEqual(retained["accepted"], True)
+            self.assertTrue((output / "known-better" / "prompt.txt").is_file())
+            prompt = (output / "known-better" / "prompt.txt").read_text(encoding="utf-8")
+            self.assertNotIn("better", prompt.split("\n\n", 1)[0])
+            self.assertNotIn("control", prompt)
+            self.assertNotIn("treatment", prompt)
+
+    def test_calibrate_reports_disagreements_below_threshold(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, output = self.run_calibrate(Path(temporary))
+
+            self.assertEqual(result.returncode, 1, result.stderr)
+            summary = json.loads(result.stdout)
+            self.assertTrue(summary["valid"])
+            self.assertFalse(summary["accepted"])
+            self.assertEqual(
+                [item["id"] for item in summary["disagreements"]],
+                ["tie"],
+            )
+            self.assertEqual(summary["disagreements"][0]["human_winner"], "tie")
+            self.assertEqual(summary["disagreements"][0]["judge_winner"], "better")
+            self.assertTrue(summary["disagreements"][0]["rationale"])
+            retained = json.loads((output / "calibration.json").read_text(encoding="utf-8"))
+            self.assertFalse(retained["accepted"])
 
 
 if __name__ == "__main__":

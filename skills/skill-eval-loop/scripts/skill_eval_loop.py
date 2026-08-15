@@ -155,6 +155,68 @@ def load_tasks(path: Path) -> list[dict[str, Any]]:
     return tasks
 
 
+REQUIRED_CALIBRATION_CASES = ("known-better", "known-worse", "tie")
+
+
+def load_calibration(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"calibration: invalid JSON: {exc.msg}") from exc
+    if not isinstance(raw, dict):
+        raise ValueError("calibration: must be an object")
+    if raw.get("version") != 1:
+        raise ValueError("calibration field version: must be 1")
+    prompt = required_string(raw.get("prompt"), "calibration field prompt")
+    dimensions = parse_rubric_dimensions(raw.get("dimensions"), "calibration")
+    cases_raw = raw.get("cases")
+    if not isinstance(cases_raw, list) or len(cases_raw) < 3:
+        raise ValueError("calibration field cases: must contain at least three entries")
+    cases: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, value in enumerate(cases_raw):
+        label = f"calibration field cases[{index}]"
+        if not isinstance(value, dict):
+            raise ValueError(f"{label}: must be an object")
+        case_id = required_string(value.get("id"), f"{label} field id")
+        safe_task_id(case_id)
+        if case_id in seen:
+            raise ValueError(f"{label} field id: duplicate value {case_id!r}")
+        human_winner = required_string(value.get("human_winner"), f"{label} field human_winner")
+        if human_winner not in {"better", "other", "tie"}:
+            raise ValueError(
+                f"{label} field human_winner: must be one of 'better', 'other', or 'tie'"
+            )
+        cases.append(
+            {
+                "id": case_id,
+                "better": required_string(value.get("better"), f"{label} field better"),
+                "other": required_string(value.get("other"), f"{label} field other"),
+                "human_winner": human_winner,
+                "rationale": required_string(value.get("rationale"), f"{label} field rationale"),
+            }
+        )
+        seen.add(case_id)
+    missing = [case_id for case_id in REQUIRED_CALIBRATION_CASES if case_id not in seen]
+    if missing:
+        raise ValueError(
+            "calibration field cases: must include known-better, known-worse, and tie"
+        )
+    minimum = raw.get("minimum_agreements")
+    if not isinstance(minimum, int) or minimum < 1 or minimum > len(cases):
+        raise ValueError(
+            "calibration field minimum_agreements: must be an integer between 1 and the case count"
+        )
+    return {
+        "version": 1,
+        "prompt": prompt,
+        "dimensions": dimensions,
+        "minimum_agreements": minimum,
+        "cases": cases,
+        "sha256": hash_file(path),
+    }
+
+
 def payload_files(root: Path) -> list[Path]:
     excluded = {"evals", "tests", "__pycache__", ".DS_Store"}
     files: list[Path] = []
@@ -602,6 +664,12 @@ def pairwise_mapping(trial: int) -> dict[str, str]:
     if random.Random(trial).randrange(2) == 0:
         return {"A": "control", "B": "treatment"}
     return {"A": "treatment", "B": "control"}
+
+
+def calibration_mapping(seed: int) -> dict[str, str]:
+    if random.Random(seed).randrange(2) == 0:
+        return {"A": "better", "B": "other"}
+    return {"A": "other", "B": "better"}
 
 
 def load_judge_json(response: str) -> dict[str, Any]:
@@ -1213,6 +1281,162 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
         discard_runtime_auth(codex_directory)
 
 
+def build_calibration_plan(arguments: argparse.Namespace) -> dict[str, Any]:
+    if arguments.harness != "codex":
+        raise ValueError("harness must be codex")
+    if not arguments.model or not arguments.judge_model or arguments.timeout_seconds < 1:
+        raise ValueError("model, judge-model, and positive timeout-seconds are required")
+    if arguments.judge_model == arguments.model:
+        raise ValueError("judge-model must differ from model")
+    fixtures = absolute_path(arguments.fixtures, "fixtures")
+    output = absolute_path(arguments.output, "output")
+    suite = load_calibration(fixtures)
+    executable, version = resolve_harness(arguments.harness_bin or "codex")
+    return {
+        "valid": True,
+        "mode": "dry_run",
+        "created_artifacts": False,
+        "configuration": {
+            "fixtures_path": str(fixtures),
+            "fixtures_sha256": suite["sha256"],
+            "harness": "codex",
+            "harness_executable": executable,
+            "harness_version": version,
+            "model": arguments.model,
+            "judge_model": arguments.judge_model,
+            "timeout_seconds": arguments.timeout_seconds,
+            "output_dir": str(output),
+            "tool_posture": "read_only",
+        },
+        "suite": {
+            "version": suite["version"],
+            "prompt": suite["prompt"],
+            "dimensions": suite["dimensions"],
+            "minimum_agreements": suite["minimum_agreements"],
+            "cases": [
+                {"id": case["id"], "human_winner": case["human_winner"], "rationale": case["rationale"]}
+                for case in suite["cases"]
+            ],
+        },
+        "counts": {
+            "case_count": len(suite["cases"]),
+            "judge_invocations": len(suite["cases"]),
+            "total_invocations": len(suite["cases"]),
+        },
+    }
+
+
+def run_calibration_case(
+    *,
+    output: Path,
+    codex_directory: Path,
+    configuration: dict[str, Any],
+    suite: dict[str, Any],
+    case: dict[str, Any],
+    seed: int,
+) -> dict[str, Any]:
+    mapping = calibration_mapping(seed)
+    candidates = {label: case[slot] for label, slot in mapping.items()}
+    result, raw = invoke_judge(
+        judge_dir=output / case["id"],
+        codex_directory=codex_directory,
+        configuration=configuration,
+        prompt=pairwise_prompt(
+            {"prompt": suite["prompt"]},
+            candidates,
+            {"dimensions": suite["dimensions"]},
+        ),
+        role="pairwise",
+    )
+    result["id"] = case["id"]
+    result["mapping"] = mapping
+    result["human_winner"] = case["human_winner"]
+    result["rationale"] = case["rationale"]
+    result["judge_winner"] = ""
+    result["agrees"] = False
+    if result["reason"]:
+        return result
+    try:
+        winner, dimensions = parse_pairwise(raw, {"dimensions": suite["dimensions"]})
+    except ValueError:
+        result["reason"] = "malformed_output"
+        return result
+    restored = "tie" if winner == "tie" else mapping[winner]
+    result["dimensions"] = dimensions
+    result["winner_label"] = winner
+    result["judge_winner"] = restored
+    result["agrees"] = restored == case["human_winner"]
+    return mark_provisional(result)
+
+
+def run_calibrate(plan: dict[str, Any]) -> dict[str, Any]:
+    configuration = plan["configuration"]
+    fixtures = Path(configuration["fixtures_path"])
+    output = Path(configuration["output_dir"])
+    suite = load_calibration(fixtures)
+    if suite["sha256"] != configuration["fixtures_sha256"]:
+        raise ValueError("calibration fixtures changed after dry-run planning")
+    if output.exists():
+        raise ValueError(f"output directory already exists: {output}")
+    output.mkdir(parents=True)
+    codex_directory = prepare_run_codex_home(output)
+    write_json(
+        output / "config.json",
+        {"mode": "calibrate", "configuration": configuration, "counts": plan["counts"]},
+    )
+    result: dict[str, Any] = {
+        "valid": True,
+        "accepted": False,
+        "mode": "calibrate",
+        "output_dir": str(output),
+        "configuration": configuration,
+        "minimum_agreements": suite["minimum_agreements"],
+        "agreements": 0,
+        "disagreements": [],
+        "cases": [],
+    }
+    try:
+        for index, case in enumerate(suite["cases"], start=1):
+            judged = run_calibration_case(
+                output=output,
+                codex_directory=codex_directory,
+                configuration=configuration,
+                suite=suite,
+                case=case,
+                seed=index,
+            )
+            result["cases"].append(judged)
+            if judged["status"] == "unknown":
+                result["valid"] = False
+                continue
+            if judged["agrees"]:
+                result["agreements"] += 1
+            else:
+                result["disagreements"].append(
+                    {
+                        "id": case["id"],
+                        "human_winner": case["human_winner"],
+                        "judge_winner": judged["judge_winner"],
+                        "rationale": case["rationale"],
+                    }
+                )
+        result["accepted"] = (
+            result["valid"] and result["agreements"] >= suite["minimum_agreements"]
+        )
+        write_json(output / "calibration.json", result)
+        return result
+    finally:
+        discard_runtime_auth(codex_directory)
+
+
+def calibration_exit_code(result: dict[str, Any]) -> int:
+    if not result["valid"]:
+        return 2
+    if result["accepted"]:
+        return 0
+    return 1
+
+
 def healthcheck(arguments: argparse.Namespace) -> int:
     root = Path(arguments.skill_dir).resolve() if arguments.skill_dir else Path(__file__).resolve().parents[1]
     required = ["SKILL.md", "scripts/skill_eval_loop.py", "scripts/skill-eval-loop"]
@@ -1221,7 +1445,7 @@ def healthcheck(arguments: argparse.Namespace) -> int:
         {
             "valid": not missing,
             "skill_dir": str(root),
-            "commands": ["healthcheck", "run"],
+            "commands": ["healthcheck", "run", "calibrate"],
             "errors": [f"{relative} is missing" for relative in missing],
         }
     )
@@ -1236,6 +1460,16 @@ def run(arguments: argparse.Namespace) -> int:
     result = run_live(plan)
     print_json(result)
     return live_exit_code(result["valid"], result["quality_status"])
+
+
+def calibrate(arguments: argparse.Namespace) -> int:
+    plan = build_calibration_plan(arguments)
+    if arguments.dry_run:
+        print_json(plan)
+        return 0
+    result = run_calibrate(plan)
+    print_json(result)
+    return calibration_exit_code(result)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1256,6 +1490,18 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--judge-model", default="")
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.set_defaults(handler=run)
+    calibrate_parser = commands.add_parser(
+        "calibrate", help="score a locked pairwise judge against human-labeled cases"
+    )
+    calibrate_parser.add_argument("--fixtures", required=True)
+    calibrate_parser.add_argument("--output", required=True)
+    calibrate_parser.add_argument("--harness", required=True)
+    calibrate_parser.add_argument("--harness-bin")
+    calibrate_parser.add_argument("--model", required=True)
+    calibrate_parser.add_argument("--judge-model", required=True)
+    calibrate_parser.add_argument("--timeout-seconds", type=int, default=120)
+    calibrate_parser.add_argument("--dry-run", action="store_true")
+    calibrate_parser.set_defaults(handler=calibrate)
     return result
 
 
