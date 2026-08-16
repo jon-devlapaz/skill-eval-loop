@@ -13,41 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - uses: actions/setup-python@e797f83bcb11b83ae66e0230d6156d7c80228e7c # v6.0.0
         with:
-          go-version: "1.26.2"
+          python-version: "3.11"
 
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
-        with:
-          node-version: "22.20.0"
-          cache: npm
-
-      - name: Install pinned Node validation tools
-        run: npm ci --ignore-scripts
-
-
-      - name: Test Go evaluator
-        run: |
-          go test -race ./...
-          go vet ./...
-          test -z "$(gofmt -l cmd internal)"
+      - name: Test Python evaluator
+        run: python3 -m unittest discover -s tests -v
 
       - name: Run evaluator healthcheck
-        run: bash skills/skill-eval-loop/scripts/healthcheck.sh
-
-      - name: Verify packaged platform binaries
-        run: |
-          test -x skills/skill-eval-loop/bin/linux-amd64/skill-eval-loop
-          test -x skills/skill-eval-loop/bin/linux-arm64/skill-eval-loop
-          test -x skills/skill-eval-loop/bin/darwin-amd64/skill-eval-loop
-          test -x skills/skill-eval-loop/bin/darwin-arm64/skill-eval-loop
-          skills/skill-eval-loop/bin/linux-amd64/skill-eval-loop healthcheck \
-            --skill-dir skills/skill-eval-loop
-          rebuilt="$RUNNER_TEMP/skill-eval-loop-linux-amd64"
-          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-            -buildvcs=false -trimpath -ldflags='-s -w' \
-            -o "$rebuilt" ./cmd/skill-eval-loop
-          cmp "$rebuilt" skills/skill-eval-loop/bin/linux-amd64/skill-eval-loop
+        run: skills/skill-eval-loop/scripts/healthcheck.sh
 
       - name: Check whitespace
         run: git diff --check "$(git hash-object -t tree /dev/null)" HEAD
@@ -59,15 +33,6 @@ jobs:
             printf 'Local-only artifacts are tracked:\n%s\n' "$tracked"
             exit 1
           fi
-
-      - name: List installable skills
-        run: |
-          ./node_modules/.bin/skills add . --list | tee /tmp/skills-list.txt
-          grep -q "skill-eval-loop" /tmp/skills-list.txt
-          test "$(find skills -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = "1"
-
-      - name: Check README links
-        run: ./node_modules/.bin/markdown-link-check README.md
 
   standalone-package:
     name: Verify standalone skill (${{ matrix.platform }})
@@ -90,7 +55,7 @@ jobs:
       - name: Copy only the installed skill payload
         run: cp -R skills/skill-eval-loop "$RUNNER_TEMP/skill-eval-loop"
 
-      - name: Run the public launcher without development tools
+      - name: Run the public launcher with only system Python
         working-directory: ${{ runner.temp }}
         run: |
           env -i \
@@ -139,17 +104,8 @@ jobs:
           "$tink" init --no-zen --no-tink-skills --no-manage-tink
           "$tink" skill add jon-devlapaz/skill-eval-loop --skill skill-eval-loop
           "$tink" skill check
-
           "$tink" skill lock
           "$tink" skill verify
 
           evaluator="$project_root/.agents/skills/skill-eval-loop/scripts/skill-eval-loop"
           "$evaluator" healthcheck
-          "$evaluator" audit \
-            --skill-path "$GITHUB_WORKSPACE/conformance/scenarios/fixtures/recommend-explicit/skill"
-
-          chmod a+x .agents/skills/skill-eval-loop/SKILL.md
-          if "$tink" skill verify; then
-            echo "Tink accepted a payload incompatible with its lock" >&2
-            exit 1
-          fi

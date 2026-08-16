@@ -1,195 +1,198 @@
 ---
 name: skill-eval-loop
-description: >
-  Run a paired Codex diagnostic that holds a task fixed and changes only access
-  to one local Agent Skill. Use when measuring whether a skill improves task
-  outcomes, validating a skill against JSONL eval tasks, or comparing control
-  and treatment responses with retained evidence.
+description: Run a paired, evidence-retaining Codex evaluation of one local Agent Skill against a no-skill control. Use when measuring whether a skill improves JSONL-defined task outcomes, validating a skill with deterministic graders, or comparing control and treatment responses.
 ---
 
 # Skill Eval Loop
 
-Run one **paired loop**:
+Measure one conditional claim: under fixed tasks, model, harness, timeout, and
+tool posture, does access to this exact skill payload change the outcome?
 
-```text
-same task + same Codex model + same tool posture
-                         |
-              +----------+----------+
-              |                     |
-        control: absent       treatment: present
-              |                     |
-              +----------+----------+
-                         |
-              responses + grades + traces
-```
+Keep raw responses and traces as evidence. Treat reports as derived views.
 
-The target skill is the only intended variable. Treat raw responses and traces
-as evidence; treat the report as a derived view.
+## Run the offline check first
 
-## 1. Pin the run
-
-Collect or infer:
-
-- absolute target skill directory containing `SKILL.md`;
-- absolute JSONL task path;
-- exact Codex model identifier;
-- trial count, normally `1` for a pilot;
-- positive timeout;
-- fresh absolute output directory.
-
-Use Codex for the minimum path. Calculate before any live run:
-
-```text
-paired trials      = tasks × trials
-target invocations = 2 × tasks × trials
-judge invocations  = 0
-total invocations  = target invocations
-```
-
-Keep the target skill and task file unchanged from dry-run through live
-execution.
-
-**Complete when:** every run variable and the exact live invocation count are
-visible to the user.
-
-## 2. Check the standalone package
-
-Resolve the installed skill folder and launcher:
+Use the installed skill's public launcher. It requires only Python 3.
 
 ```bash
-SKILL_EVAL_DIR=/absolute/path/to/skill-eval-loop
-EVALUATOR="$SKILL_EVAL_DIR/scripts/skill-eval-loop"
-
+EVALUATOR=/absolute/path/to/skill-eval-loop/scripts/skill-eval-loop
 "$EVALUATOR" healthcheck
-codex --version
-codex login status
 ```
 
-Existing ChatGPT authentication is sufficient; the evaluator references the
-authenticated Codex home without copying credentials. If the target skill is
-already installed in that Codex home's `skills/` directory, report control
-contamination and stop before invocation.
-
-**Complete when:** healthcheck succeeds, Codex is executable and authenticated,
-and the target skill is absent from global Codex skills.
-
-## 3. Prepare deterministic tasks
-
-Use one JSON object per non-empty line:
+Use newline-delimited JSON tasks. Each task needs a path-safe `id`, a non-empty
+`prompt`, and at least one grader.
 
 ```json
 {"id":"qualified-choice","prompt":"Choose the qualified candidate.","graders":[{"type":"regex","pattern":"(?i)\\bBlue\\b"}]}
 ```
 
-Each task requires a unique path-safe `id`, a non-empty `prompt`, and at least
-one grader. The live minimum supports:
+Use `response_not_empty` as the deterministic preflight for every qualitative
+rubric. It verifies that there is a response; it is not a quality score. A
+rubric contains named dimensions, each with at least two named descriptive
+levels:
 
-- `regex` with `pattern`;
-- `not_regex` with `pattern`;
-- `file_exists` with workspace-relative `path`;
-- `json_equal` with workspace-relative `path` and JSON `expected`.
+```json
+{"id":"scoped-change","prompt":"Make the smallest safe change.","graders":[{"type":"response_not_empty"},{"type":"rubric","dimensions":[{"name":"scope","levels":[{"name":"not_met","description":"Changes unrelated behavior."},{"name":"met","description":"Changes only the requested behavior."}]}]}]}
+```
 
-Prefer outcome checks that distinguish a useful response from a plausible but
-wrong response. Preserve semantic requirements, references, and
-counter-references as extra task metadata for manual review; they do not add
-judge calls.
+Use `regex` or `not_regex` only for genuinely machine-checkable response
+requirements. Use `file_exists` and `json_equal` only when the configured
+harness can create the stated workspace artifact. Keep unknown task metadata
+for human review; it does not affect execution.
 
-**Complete when:** every task has a meaningful deterministic check and the
-task file is frozen for the paired run.
+The current runner starts each condition in an empty read-only workspace. Use
+response-only tasks unless the prompt itself contains all required material.
+Do not use repository-editing or test-running tasks as quality evidence: there
+is no seeded repository for the agent to change or verify.
 
-## 4. Dry-run
+## Find or author the suite
 
-Run the packaged launcher with explicit inputs:
+Pass `--tasks` when evaluating a caller-owned JSONL task file. Otherwise, the
+runner uses `TARGET/evals/tasks.jsonl`.
+
+If neither exists, do not co-author the suite. Read
+[`references/eval-authoring.md`](references/eval-authoring.md), then launch a
+fresh-context subagent with only the target's absolute path and the task
+contract. Let it write only `TARGET/evals/**` and return a factual handoff.
+Inspect the resulting diff and run a dry-run before the paired evaluation.
+
+The Python runner does not spawn agents or create target files itself. Its
+missing-suite error is the precondition for this coordinator workflow.
+
+## Plan the exact run
+
+Pass absolute paths and a fresh output directory. Dry-run validates consumed
+inputs, resolves the Codex executable, hashes the skill and tasks, and creates
+neither run artifacts nor provider calls.
 
 ```bash
 "$EVALUATOR" run \
   --skill /absolute/path/to/target-skill \
-  --tasks /absolute/path/to/tasks.jsonl \
   --output /absolute/path/to/fresh-run \
   --harness codex \
   --harness-bin /absolute/path/to/codex \
   --model exact-model-id \
+  --judge-model exact-judge-model-id \
+  --calibration /absolute/path/to/fresh-calibration/calibration.json \
   --trials 1 \
   --timeout-seconds 300 \
   --dry-run
 ```
 
-Verify `valid: true`, the resolved paths and hashes, the exact model and Codex
-version, `created_artifacts: false`, and the predicted invocation counts.
-Present the plan and obtain explicit authorization for the reported live calls
-and unknown cost.
+Add `--tasks /absolute/path/to/tasks.jsonl` to evaluate a task file outside the
+target skill.
 
-**Complete when:** dry-run is valid, predicts the expected calls, creates no
-output directory, and live execution is explicitly authorized.
+Verify `valid: true`, hashes, resolved model and executable, and the predicted
+invocation count. Obtain authorization for the displayed live calls before
+running without `--dry-run`.
 
-## 5. Run once
+For `tasks × trials`, the runner plans two target invocations per paired trial.
+For rubric tasks, pass an exact `--judge-model` and the absolute path to an
+accepted `calibration.json`. The calibration runner and judge models must match
+the planned run. The retained fixture path must still exist at its recorded
+absolute path with the same SHA-256 hash. Omitting `--calibration` is allowed,
+but a rubric run then remains quality-incomplete and cannot exit `0`.
 
-Execute the same command without `--dry-run`. Monitor that process and its
-condition traces. The runner executes sequentially, alternates condition order
-by trial, and retains partial evidence on failure.
+The judge must differ from the runner model. An OpenAI model judging another
+OpenAI model is explicitly same-provider evidence, not an independent judgment.
+A recommended OpenAI-only pair is `--model gpt-5.6-terra --judge-model
+gpt-5.6-sol`.
 
-A failed attempt remains evidence. Diagnose it, choose a new output directory,
-and obtain authorization before another live attempt.
+## Calibrate the pairwise judge
 
-**Complete when:** the process exits, both planned conditions are accounted
-for, and the retained `run.json` is available for inspection.
+Score the judge against versioned human-labeled cases before a live quality
+pilot. The suite must include `known-better`, `known-worse`, and `tie`, each
+with rationale. The judge sees anonymized `A`/`B` text only.
 
-## 6. Inspect the pair
-
-Read:
-
-```text
-run.json
-task-<id>/trial-<n>/report.json
-task-<id>/trial-<n>/report.md
-task-<id>/trial-<n>/control/response.md
-task-<id>/trial-<n>/control/trace.jsonl
-task-<id>/trial-<n>/treatment/response.md
-task-<id>/trial-<n>/treatment/trace.jsonl
+```bash
+"$EVALUATOR" calibrate \
+  --fixtures /absolute/path/to/calibration/v1.json \
+  --output /absolute/path/to/fresh-calibration \
+  --harness codex \
+  --harness-bin /absolute/path/to/codex \
+  --model exact-model-id \
+  --judge-model exact-judge-model-id \
+  --dry-run
 ```
 
-Confirm:
+Dry-run prints the locked cases and invocation count. A live calibrate retains
+`calibration.json` plus per-case judge artifacts. `accepted` is true only when
+every required judgment succeeds and agreements meet `minimum_agreements`.
+The production mapping exercises both `A=better` and `B=better`; a retained
+calibration without both orientations cannot bind a rubric run. Disagreements
+keep the human rationale. Exit `0` if accepted, `1` if the runner is valid but
+below threshold, and `2` if a judgment is invalid.
 
-- suite and pair report `valid` / `runner_valid` are true;
-- target and total invocation counts equal the dry-run plan;
-- control target skill is absent;
-- treatment target skill is present and its installed/source hash matches;
-- treatment trace shows explicit skill access;
-- both executions completed under the same requested model and tool posture;
-- configured and resolved model evidence are labeled separately;
-- grader evidence agrees with the raw responses;
-- reported tokens are exact and missing cost stays unknown.
+For Task 8, the operator-controlled `calibration.json` and its original
+absolute fixture path are the binding trust root. The runner validates their
+internal consistency, models, labels, agreement threshold, assignment
+orientations, and fixture hash. It does not authenticate the origin of the raw
+judge artifacts. Keep the calibration directory and fixture under controlled
+local custody; moving the fixture invalidates the binding even if its content
+is unchanged.
 
-Interpret `treatment_only`, `both_pass`, `control_only`, `both_fail`, and
-`not_scored` literally. `both_pass` can mean the task is saturated; it is not an
-evaluator failure. Compare semantic requirements manually even when both
-conditions pass deterministic checks.
+Do not treat same-provider calibration as independent. Do not run a live paired
+pilot until calibration is accepted and a human reviews disagreements.
 
-**Complete when:** runner validity and skill outcome are reported separately,
-both transcripts have been read, and every conclusion points to retained
-evidence.
+## Run one pair
 
-## Claim boundary
+Run the identical command without `--dry-run`. The runner:
 
-A one-task pilot proves that the paired loop operates for that configuration.
-It does not establish general skill quality. Broader claims require realistic
-unsaturated tasks, repeated trials, fair graders, and transcript review.
+- uses a no-skill control and an exact-hash treatment;
+- runs sequentially, alternating control-first and treatment-first by trial;
+- invokes Codex in read-only mode;
+- retains response, trace, stderr, execution metadata, and reports;
+- runs deterministic gates before any rubric judge;
+- asks the judge for concrete evidence and one locked level per dimension;
+- never retries silently.
 
-Codex receives the exact requested model through `--model`. When its JSON trace
-does not expose resolved backend identity, report `cli_configured` and keep the
-resolved identity unknown. Provider-call count and monetary cost also remain
-unknown unless Codex reports them.
+Treat `runner_valid` and the deterministic comparison separately. A valid
+runner may show `both_pass`, `both_fail`, `control_only`, or `treatment_only`.
+Read both responses before making a quality claim.
 
-## Legacy branch
+For rubric tasks, inspect each condition's `rubric_judgments`, the pair's
+`pairwise` evidence, and `dimension_results`. A successful Codex judgment is
+labeled `provisional_non_independent`. A timeout, failed deterministic gate,
+malformed response, mismatched judge identity, or identical runner and judge
+model produces `unknown`. If the trace does not report a model, the requested
+judge model is recorded as unattested CLI configuration. Pairwise comparison
+runs only after both per-output judgments succeed. The pairwise prompt uses
+`A` and `B`; the report restores control and treatment. Pairwise status is
+quality evidence, not runner validity.
 
-When the user explicitly requests schema-versioned suite auditing, model
-recommendations, aggregation, another harness, or Herdr observation, use the
-legacy commands and load only the relevant reference:
+`quality_status` is evidence completeness. `quality_outcome` is `not_judged`
+when there is no rubric, `unknown` when any required judgment is unknown,
+`tie` when the restored winner is a tie, `inconsistent` when a pairwise
+dimension disagrees with the overall winner, or the restored winner condition.
+An overall winner is never a quality pass when a dimension is unknown or
+disagrees. Activation is reported as unknown because Codex telemetry is not
+scored. A bound accepted calibration records `calibration_status: accepted`
+and `fixtures_sha256` in `run.json` and every pair report. Without a binding,
+calibration remains `not_run` and rubric quality remains `unknown`.
 
-- suite validation: [references/eval-suite-schema.md](references/eval-suite-schema.md);
-- harness status: [references/harness-support.md](references/harness-support.md);
-- setup failures: [references/setup-remediation.md](references/setup-remediation.md);
-- retained legacy layout: [references/workspace-layout.md](references/workspace-layout.md);
-- benchmark interpretation: [references/interpret-benchmark.md](references/interpret-benchmark.md).
+Process exit status is `0` for complete provisional quality evidence, `1` when
+the runner is valid but quality is unknown or was not judged, and `2` when the
+runner is invalid. A malformed, unaccepted, model-mismatched, assignment-
+degenerate, unavailable, or hash-drifted supplied calibration is runner-invalid.
 
-Keep that branch separate from the minimum JSONL paired loop.
+## Inspect retained evidence
+
+Read `run.json` followed by each pair's `report.json`, `report.md`, responses,
+traces, and stderr. Confirm the control lacks the target skill, the treatment
+contains the source hash, and any trace-reported model identity agrees with the
+requested model.
+
+A live run creates `$output/codex-home` and points Codex at that directory.
+If `~/.codex/auth.json` exists, it is copied there for the process and removed
+afterward. Do not treat that file as retained evidence. Host Codex skills are
+not part of the intervention.
+
+Treat access to the exact hashed payload as the intervention. A trace may help
+explain how Codex used that access, but missing activation telemetry does not
+invalidate the outcome comparison or become a quality score. Phrase the result
+as the measured effect of skill access under the recorded configuration; do not
+claim that Codex definitely read or followed the skill.
+
+Do not claim broad skill quality from one pilot or from same-provider judging.
+Use realistic unsaturated tasks, repeated trials, deterministic outcomes,
+blinded comparison, human calibration, and human transcript review.

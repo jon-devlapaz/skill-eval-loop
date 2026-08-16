@@ -1,9 +1,0 @@
-{
-  "schema_version": 2,
-  "skill_name": "skill-mismatch",
-  "suite_type": "capability",
-  "dataset_origin": "author_derived",
-  "tool_profile": "no_tools",
-  "activation_mode": "forced",
-  "evals": [{"id":"mismatch","prompt":"MISMATCH","behavior_class":"edge","graders":[{"name":"contains","type":"response_contains","value":"ok"}],"reference":{"response":"ok"}}]
-}

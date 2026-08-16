@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "prompt": "Choose Blue.",
+  "minimum_agreements": 3,
+  "dimensions": [
+    {
+      "name": "safe choice",
+      "levels": [
+        {
+          "name": "not_met",
+          "description": "Does not choose Blue."
+        },
+        {
+          "name": "met",
+          "description": "Chooses Blue."
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "known-better",
+      "better": "Blue",
+      "other": "Red",
+      "human_winner": "better",
+      "rationale": "Blue meets the locked safe-choice dimension; Red does not."
+    },
+    {
+      "id": "known-worse",
+      "better": "The safe option is Blue.",
+      "other": "Choose Red instead.",
+      "human_winner": "better",
+      "rationale": "The worse response selects Red, which fails the locked dimension."
+    },
+    {
+      "id": "tie",
+      "better": "Blue",
+      "other": "Blue",
+      "human_winner": "tie",
+      "rationale": "Both responses choose Blue, so neither candidate is better."
+    }
+  ]
+}
