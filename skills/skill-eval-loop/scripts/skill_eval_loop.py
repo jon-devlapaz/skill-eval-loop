@@ -18,6 +18,12 @@ from typing import Any
 
 
 MAX_TASK_BYTES = 4 * 1024 * 1024
+
+
+class CalibrationBindingError(ValueError):
+    """A supplied calibration cannot establish valid runner evidence."""
+
+
 SUPPORTED_GRADERS = {
     "regex",
     "not_regex",
@@ -217,6 +223,99 @@ def load_calibration(path: Path) -> dict[str, Any]:
     }
 
 
+def _load_calibration_binding(path: Path, runner_model: str, judge_model: str) -> dict[str, Any]:
+    """Validate the retained calibration evidence that a rubric run consumes."""
+    try:
+        retained = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"calibration: invalid retained JSON: {exc.msg}") from exc
+    if not isinstance(retained, dict):
+        raise ValueError("calibration: retained evidence must be an object")
+    if retained.get("valid") is not True or retained.get("accepted") is not True:
+        raise ValueError("calibration: evidence must be valid and accepted")
+    configuration = retained.get("configuration")
+    if not isinstance(configuration, dict):
+        raise ValueError("calibration: retained configuration is required")
+    if configuration.get("model") != runner_model:
+        raise ValueError("calibration: runner model does not match")
+    if configuration.get("judge_model") != judge_model:
+        raise ValueError("calibration: judge model does not match")
+    fixtures_value = configuration.get("fixtures_path")
+    fixtures_hash = configuration.get("fixtures_sha256")
+    if not isinstance(fixtures_value, str) or not Path(fixtures_value).is_absolute():
+        raise ValueError("calibration: fixtures path must be absolute")
+    if not isinstance(fixtures_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", fixtures_hash):
+        raise ValueError("calibration: fixtures_sha256 must be a SHA-256 hex digest")
+    fixtures = Path(fixtures_value)
+    if not fixtures.is_file() or hash_file(fixtures) != fixtures_hash:
+        raise ValueError("calibration: fixture path or hash does not match")
+    try:
+        suite = load_calibration(fixtures)
+    except (OSError, ValueError) as exc:
+        raise CalibrationBindingError(str(exc)) from exc
+    cases = retained.get("cases")
+    if not isinstance(cases, list) or not cases:
+        raise ValueError("calibration: retained cases are required")
+    if len(cases) != len(suite["cases"]) or not all(isinstance(case, dict) for case in cases):
+        raise ValueError("calibration: retained cases do not match the fixture")
+    if [case.get("id") for case in cases] != [case["id"] for case in suite["cases"]]:
+        raise ValueError("calibration: retained cases do not match the fixture")
+    if retained.get("minimum_agreements") != suite["minimum_agreements"]:
+        raise ValueError("calibration: agreement threshold does not match the fixture")
+    orientations: set[str] = set()
+    agreement_count = 0
+    for case, fixture_case in zip(cases, suite["cases"]):
+        if not isinstance(case, dict) or case.get("status") != "provisional_non_independent":
+            raise ValueError("calibration: every case must have a valid judgment")
+        mapping = case.get("mapping")
+        candidate_a = mapping.get("A") if isinstance(mapping, dict) else None
+        candidate_b = mapping.get("B") if isinstance(mapping, dict) else None
+        if (
+            not isinstance(candidate_a, str)
+            or candidate_a not in {"better", "other"}
+            or not isinstance(candidate_b, str)
+            or candidate_b not in {"better", "other"}
+        ):
+            raise ValueError("calibration: every case must have a nondegenerate A/B mapping")
+        if candidate_a == candidate_b:
+            raise ValueError("calibration: every case must map A and B to distinct candidates")
+        winner_label = case.get("winner_label")
+        if not isinstance(winner_label, str) or winner_label not in {"A", "B", "tie"}:
+            raise ValueError("calibration: every case must retain a valid winner label")
+        restored_winner = "tie" if winner_label == "tie" else mapping[winner_label]
+        if case.get("judge_winner") != restored_winner:
+            raise ValueError("calibration: restored judge winner does not match retained evidence")
+        if case.get("human_winner") != fixture_case["human_winner"]:
+            raise ValueError("calibration: retained human label does not match the fixture")
+        agrees = restored_winner == fixture_case["human_winner"]
+        if case.get("agrees") is not agrees:
+            raise ValueError("calibration: retained agreement does not match locked labels")
+        orientations.add(candidate_a)
+        agreement_count += agrees
+    if retained.get("agreements") != agreement_count:
+        raise ValueError("calibration: agreement count does not match retained cases")
+    if agreement_count < suite["minimum_agreements"]:
+        raise ValueError("calibration: agreement threshold was not met")
+    if orientations != {"better", "other"}:
+        raise ValueError("calibration: cases must include both A=better and B=better mappings")
+    return {
+        "status": "accepted",
+        "path": str(path),
+        "sha256": hash_file(path),
+        "fixtures_path": fixtures_value,
+        "fixtures_sha256": fixtures_hash,
+    }
+
+
+def load_calibration_binding(path: Path, runner_model: str, judge_model: str) -> dict[str, Any]:
+    try:
+        return _load_calibration_binding(path, runner_model, judge_model)
+    except CalibrationBindingError:
+        raise
+    except (OSError, ValueError) as exc:
+        raise CalibrationBindingError(str(exc)) from exc
+
+
 def payload_files(root: Path) -> list[Path]:
     excluded = {"evals", "tests", "__pycache__", ".DS_Store"}
     files: list[Path] = []
@@ -287,6 +386,13 @@ def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
     )
     if rubrics and not arguments.judge_model:
         raise ValueError("judge-model is required when rubric graders are present")
+    calibration: dict[str, Any] | None = None
+    if arguments.calibration is not None:
+        try:
+            calibration_path = absolute_path(arguments.calibration, "calibration")
+        except ValueError as exc:
+            raise CalibrationBindingError(str(exc)) from exc
+        calibration = load_calibration_binding(calibration_path, arguments.model, arguments.judge_model)
     executable, version = resolve_harness(arguments.harness_bin or "codex")
     paired_trials = len(tasks) * arguments.trials
     target_invocations = paired_trials * 2
@@ -309,6 +415,11 @@ def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
             "trials": arguments.trials,
             "timeout_seconds": arguments.timeout_seconds,
             "output_dir": str(output),
+            "calibration_path": calibration["path"] if calibration else None,
+            "calibration_sha256": calibration["sha256"] if calibration else None,
+            "calibration_status": calibration["status"] if calibration else "not_run",
+            "fixtures_path": calibration["fixtures_path"] if calibration else None,
+            "fixtures_sha256": calibration["fixtures_sha256"] if calibration else None,
             "execution": "sequential",
             "condition_order": "alternating_control_first",
             "tool_posture": "read_only",
@@ -667,9 +778,10 @@ def pairwise_mapping(trial: int) -> dict[str, str]:
 
 
 def calibration_mapping(seed: int) -> dict[str, str]:
-    if random.Random(seed).randrange(2) == 0:
-        return {"A": "better", "B": "other"}
-    return {"A": "other", "B": "better"}
+    # Alternate the blind assignment so the locked suite exercises both labels.
+    if seed % 2:
+        return {"A": "other", "B": "better"}
+    return {"A": "better", "B": "other"}
 
 
 def load_judge_json(response: str) -> dict[str, Any]:
@@ -1046,10 +1158,10 @@ def dimension_results(
     return results
 
 
-def quality_status_for(rubric: str, pairwise: str) -> str:
+def quality_status_for(rubric: str, pairwise: str, calibration_status: str) -> str:
     if rubric == "not_required":
         return "not_required"
-    if rubric == "unknown" or pairwise == "unknown":
+    if calibration_status != "accepted" or rubric == "unknown" or pairwise == "unknown":
         return "unknown"
     return "provisional_non_independent"
 
@@ -1114,13 +1226,15 @@ def write_pair_report(
     conditions: dict[str, dict[str, Any]],
     isolation: dict[str, bool],
     pairwise: list[dict[str, Any]],
+    calibration_status: str,
+    fixtures_sha256: str | None,
 ) -> tuple[dict[str, Any], Path, Path]:
     control = conditions["control"]
     treatment = conditions["treatment"]
     runner_valid = runner_is_valid(conditions, isolation)
     rubric = rubric_status(conditions)
     pair = pairwise_status(pairwise)
-    quality_status = quality_status_for(rubric, pair)
+    quality_status = quality_status_for(rubric, pair, calibration_status)
     dimensions = dimension_results(conditions, pairwise)
     report = {
         "runner_valid": runner_valid,
@@ -1136,7 +1250,8 @@ def write_pair_report(
         "pairwise_status": pair,
         "quality_status": quality_status,
         "quality_outcome": quality_outcome_for(pairwise, quality_status),
-        "calibration_status": "not_run",
+        "calibration_status": calibration_status,
+        "fixtures_sha256": fixtures_sha256,
         "dimension_results": dimensions,
         "pairwise": pairwise,
         "skill": {"name": skill_name, "sha256": skill_hash},
@@ -1197,6 +1312,17 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("tasks changed after dry-run planning")
     if hash_skill(skill) != configuration["skill_sha256"]:
         raise ValueError("skill changed after dry-run planning")
+    calibration_status = configuration.get("calibration_status", "not_run")
+    fixtures_sha256 = configuration.get("fixtures_sha256")
+    if configuration.get("calibration_path") is not None:
+        calibration_path = Path(configuration["calibration_path"])
+        binding = load_calibration_binding(
+            calibration_path, configuration["model"], configuration["judge_model"]
+        )
+        if binding["sha256"] != configuration.get("calibration_sha256"):
+            raise CalibrationBindingError("calibration changed after dry-run planning")
+        if binding["fixtures_sha256"] != configuration.get("fixtures_sha256"):
+            raise CalibrationBindingError("calibration fixture changed after dry-run planning")
     if output.exists():
         raise ValueError(f"output directory already exists: {output}")
     skill_name = skill.name
@@ -1211,7 +1337,8 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
         "configuration": configuration,
         "counts": plan["counts"],
         "activation": {"status": "unknown", "reason": "telemetry_unavailable"},
-        "calibration_status": "not_run",
+        "calibration_status": calibration_status,
+        "fixtures_sha256": fixtures_sha256,
         "quality_status": "not_required",
         "pairs": [],
     }
@@ -1257,6 +1384,8 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
                     conditions,
                     isolation,
                     pairwise,
+                    calibration_status,
+                    fixtures_sha256,
                 )
                 if not report["runner_valid"]:
                     result["valid"] = False
@@ -1487,6 +1616,7 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--trials", type=int, default=1)
     run_parser.add_argument("--timeout-seconds", type=int, default=120)
     run_parser.add_argument("--judge-model", default="")
+    run_parser.add_argument("--calibration")
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.set_defaults(handler=run)
     calibrate_parser = commands.add_parser(
@@ -1508,6 +1638,9 @@ def main() -> int:
     arguments = parser().parse_args()
     try:
         return arguments.handler(arguments)
+    except CalibrationBindingError as exc:
+        error(str(exc))
+        return 2
     except (OSError, ValueError) as exc:
         error(str(exc))
         return 1
