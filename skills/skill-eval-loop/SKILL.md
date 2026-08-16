@@ -72,6 +72,8 @@ neither run artifacts nor provider calls.
   --harness codex \
   --harness-bin /absolute/path/to/codex \
   --model exact-model-id \
+  --judge-model exact-judge-model-id \
+  --calibration /absolute/path/to/fresh-calibration/calibration.json \
   --trials 1 \
   --timeout-seconds 300 \
   --dry-run
@@ -85,10 +87,16 @@ invocation count. Obtain authorization for the displayed live calls before
 running without `--dry-run`.
 
 For `tasks × trials`, the runner plans two target invocations per paired trial.
-For rubric tasks, also pass an exact `--judge-model`. The judge must differ from
-the runner model. An OpenAI model judging another OpenAI model is explicitly
-same-provider evidence, not an independent judgment. A recommended OpenAI-only
-pair is `--model gpt-5.6-terra --judge-model gpt-5.6-sol`.
+For rubric tasks, pass an exact `--judge-model` and the absolute path to an
+accepted `calibration.json`. The calibration runner and judge models must match
+the planned run. The retained fixture path must still exist at its recorded
+absolute path with the same SHA-256 hash. Omitting `--calibration` is allowed,
+but a rubric run then remains quality-incomplete and cannot exit `0`.
+
+The judge must differ from the runner model. An OpenAI model judging another
+OpenAI model is explicitly same-provider evidence, not an independent judgment.
+A recommended OpenAI-only pair is `--model gpt-5.6-terra --judge-model
+gpt-5.6-sol`.
 
 ## Calibrate the pairwise judge
 
@@ -110,8 +118,18 @@ with rationale. The judge sees anonymized `A`/`B` text only.
 Dry-run prints the locked cases and invocation count. A live calibrate retains
 `calibration.json` plus per-case judge artifacts. `accepted` is true only when
 every required judgment succeeds and agreements meet `minimum_agreements`.
-Disagreements keep the human rationale. Exit `0` if accepted, `1` if the
-runner is valid but below threshold, and `2` if a judgment is invalid.
+The production mapping exercises both `A=better` and `B=better`; a retained
+calibration without both orientations cannot bind a rubric run. Disagreements
+keep the human rationale. Exit `0` if accepted, `1` if the runner is valid but
+below threshold, and `2` if a judgment is invalid.
+
+For Task 8, the operator-controlled `calibration.json` and its original
+absolute fixture path are the binding trust root. The runner validates their
+internal consistency, models, labels, agreement threshold, assignment
+orientations, and fixture hash. It does not authenticate the origin of the raw
+judge artifacts. Keep the calibration directory and fixture under controlled
+local custody; moving the fixture invalidates the binding even if its content
+is unchanged.
 
 Do not treat same-provider calibration as independent. Do not run a live paired
 pilot until calibration is accepted and a human reviews disagreements.
@@ -148,11 +166,14 @@ when there is no rubric, `unknown` when any required judgment is unknown,
 dimension disagrees with the overall winner, or the restored winner condition.
 An overall winner is never a quality pass when a dimension is unknown or
 disagrees. Activation is reported as unknown because Codex telemetry is not
-scored. Calibration stays `not_run` until a later calibration step.
+scored. A bound accepted calibration records `calibration_status: accepted`
+and `fixtures_sha256` in `run.json` and every pair report. Without a binding,
+calibration remains `not_run` and rubric quality remains `unknown`.
 
 Process exit status is `0` for complete provisional quality evidence, `1` when
 the runner is valid but quality is unknown or was not judged, and `2` when the
-runner is invalid.
+runner is invalid. A malformed, unaccepted, model-mismatched, assignment-
+degenerate, unavailable, or hash-drifted supplied calibration is runner-invalid.
 
 ## Inspect retained evidence
 

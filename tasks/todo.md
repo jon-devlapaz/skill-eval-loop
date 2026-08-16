@@ -11,6 +11,6 @@
 - [x] Task 6: Calibrate with known outcomes; one-task live pilot recorded.
 - [ ] Checkpoint: verify all six capabilities (independent judge still open).
 - [ ] Task 7: Lock a non-toy skill suite (ask before inventing one).
-- [ ] Task 8: Force live calibrate A/B flips; bind accepted fixture hash into `run`.
+- [x] Task 8: Force live calibrate A/B flips; bind accepted fixture hash into `run`.
 - [ ] Task 9: CI gate on complete, hash-bound, non-toy quality evidence.
 - [ ] Task 10: Independent judge or holdout only after the CI gate is honest.

@@ -214,9 +214,26 @@ Human calibration is a separate `calibrate` command. It loads a versioned
 fixture with `known-better`, `known-worse`, and `tie` cases, each with a
 locked human winner and rationale. The judge sees anonymized candidates `A`
 and `B`. The report restores `better`/`other`/`tie`, counts agreements against
-`minimum_agreements`, and retains disagreements with the human rationale.
-Same-provider calibration remains provisional. A live paired pilot should wait
-until calibration is accepted and a human reviews disagreements.
+`minimum_agreements`, and retains disagreements with the human rationale. The
+production assignment includes both `A=better` and `B=better`; a calibration
+with only one orientation is not bindable. Same-provider calibration remains
+provisional. A live paired pilot should wait until calibration is accepted and
+a human reviews disagreements.
+
+A rubric `run` may consume the retained result with
+`--calibration /absolute/path/to/calibration.json`. A binding is accepted only
+when the calibration is valid and accepted, its runner and judge models match
+the run, its retained cases agree with the locked fixture, and the fixture at
+its recorded absolute path still has the retained SHA-256 hash. The binding is
+checked during planning and again before live execution. `run.json` and every
+pair report retain `calibration_status` and `fixtures_sha256`.
+
+For this contract, the operator-controlled `calibration.json` and its original
+absolute fixture path are the binding trust root. The runner verifies their
+internal consistency but does not authenticate the origin of the raw prompt,
+response, trace, or stderr artifacts. Those raw artifacts remain the evidence
+for human inspection. Moving the fixture invalidates the binding even when its
+content is unchanged.
 
 ## Reports and exit status
 
@@ -224,8 +241,9 @@ Pair reports separate runner validity, activation, deterministic comparison,
 per-output rubric status, pairwise status, quality completeness, quality
 outcome, and calibration. `run.json` repeats the rolled-up runner validity and
 quality status. Activation is `unknown` with reason `telemetry_unavailable`
-until a later telemetry source exists. Calibration is `not_run` until
-calibration evidence exists.
+until a later telemetry source exists. Calibration is `accepted` only when a
+validated binding is supplied. Without `--calibration`, a rubric run records
+`not_run`, quality remains `unknown`, and the runner cannot exit `0`.
 
 `quality_status` is `not_required` when no rubric is present, `unknown` when
 any required judgment is unknown, and `provisional_non_independent` when every
@@ -240,6 +258,11 @@ Process exit status distinguishes those cases:
 - `0`: runner valid and quality evidence complete;
 - `1`: runner valid, but quality unknown or not judged;
 - `2`: runner invalid.
+
+A supplied calibration that is malformed, unaccepted, model-mismatched,
+assignment-degenerate, unavailable at its retained fixture path, or hash-
+drifted is runner-invalid and exits `2`. Deterministic-only runs do not require
+calibration; their semantic quality remains not judged and they exit `1`.
 
 ## Runner acceptance versus skill quality
 

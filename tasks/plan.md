@@ -376,15 +376,23 @@ refuse a quality-complete exit when calibration is `not_run` or the hash
 drifts.
 
 **Acceptance criteria:**
-- [ ] Live calibrate seeds are not all mapped `A=better`.
-- [ ] `run.json` records the bound fixture hash; mismatch or `not_run` cannot
+- [x] Live calibrate seeds are not all mapped `A=better`.
+- [x] `run.json` records the bound fixture hash; mismatch or `not_run` cannot
   exit `0` on a rubric run.
 
 **Verification:**
-- [ ] `python3 -m unittest discover -s tests -v`
-- [ ] Focused tests cover hash bind, missing calibration, and A/B flip.
+- [x] `python3 -m unittest discover -s tests -v`
+- [x] Focused tests cover hash bind, missing calibration, and A/B flip.
 
 **Dependencies:** Task 7 for the live suite; tests can land first.
+
+**Result:** Production calibration alternates both candidate orientations.
+Rubric runs bind a validated accepted calibration and fixture hash; missing
+calibration cannot complete quality evidence, and malformed or drifted supplied
+bindings are runner-invalid. Unit and fake-harness verification is complete;
+no external Codex run was added. The Task 8 trust root is the operator-controlled
+`calibration.json` plus its original absolute fixture path. Task 9 must keep one
+stable CI path or separately approve a portable content-addressed design.
 
 ### Task 9: CI as the product UI
 
