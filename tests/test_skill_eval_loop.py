@@ -50,6 +50,8 @@ class SkillEvalLoopCliTests(unittest.TestCase):
         control_response: str = "Blue",
         calibration: Path | str | None = None,
         use_calibration: bool = True,
+        trials: int = 1,
+        promotion: bool = False,
     ) -> tuple[subprocess.CompletedProcess[str], Path, Path]:
         skill = self.make_skill(root)
         tasks = root / "tasks.jsonl"
@@ -114,7 +116,11 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 judge_model,
                 "--timeout-seconds",
                 "1",
-            ] + (["--calibration", str(calibration)] if calibration is not None else []),
+                "--trials",
+                str(trials),
+            ]
+            + (["--calibration", str(calibration)] if calibration is not None else [])
+            + (["--promotion"] if promotion else []),
             cwd=ROOT,
             text=True,
             capture_output=True,
@@ -474,6 +480,40 @@ class SkillEvalLoopCliTests(unittest.TestCase):
 
             self.assertEqual(uncalibrated.returncode, 1)
             self.assertIn("require accepted calibration", uncalibrated.stderr)
+
+    def test_prepare_review_creates_a_blinded_packet_bound_to_a_promotion_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            result, run_dir, _ = self.run_live_rubric(root, trials=3, promotion=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            packet = root / "review-packet"
+
+            prepared = self.run_cli(
+                "prepare-review",
+                "--run-dir",
+                str(run_dir),
+                "--output",
+                str(packet),
+            )
+
+            self.assertEqual(prepared.returncode, 0, prepared.stderr)
+            manifest = json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
+            template = json.loads((packet / "labels-template.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["version"], 1)
+            self.assertEqual(manifest["required_reviewers"], 2)
+            self.assertEqual(len(manifest["items"]), 3)
+            self.assertEqual(template["manifest_sha256"], self.hash_file(packet / "manifest.json"))
+            for item in manifest["items"]:
+                prompt = (packet / item["prompt"]).read_text(encoding="utf-8")
+                self.assertNotIn("control", prompt.casefold())
+                self.assertNotIn("treatment", prompt.casefold())
+                self.assertEqual(item["prompt_sha256"], self.hash_file(packet / item["prompt"]))
+
+    @staticmethod
+    def hash_file(path: Path) -> str:
+        import hashlib
+
+        return hashlib.sha256(path.read_bytes()).hexdigest()
 
     def test_dry_run_requires_explicit_or_target_owned_tasks_before_harness_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

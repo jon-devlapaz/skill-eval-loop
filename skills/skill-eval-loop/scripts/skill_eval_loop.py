@@ -478,6 +478,28 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
 
 
+def load_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label}: invalid JSON: {exc.msg}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label}: must be an object")
+    return value
+
+
+def retained_file(root: Path, relative: Any, label: str) -> Path:
+    value = relative_workspace_path(relative, label)
+    path = (root / value).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"{label}: must stay inside the retained run") from exc
+    if not path.is_file():
+        raise ValueError(f"{label}: file does not exist")
+    return path
+
+
 def safe_task_id(task_id: str) -> None:
     if not task_id or task_id in {".", ".."} or not task_id[0].isalnum():
         raise ValueError(f'task "{task_id}" field id: must be path-safe')
@@ -1807,6 +1829,132 @@ def calibrate(arguments: argparse.Namespace) -> int:
     return calibration_exit_code(result)
 
 
+def prepare_review(arguments: argparse.Namespace) -> int:
+    run_dir = absolute_path(arguments.run_dir, "run-dir")
+    output = absolute_path(arguments.output, "output")
+    run_path = run_dir / "run.json"
+    run = load_json_object(run_path, "run")
+    configuration = run.get("configuration")
+    if not isinstance(configuration, dict) or configuration.get("evaluation_role") != "promotion":
+        raise ValueError("run: must be a promotion run")
+    if not run.get("valid") or run.get("quality_status") == "unknown":
+        raise ValueError("run: promotion evidence must be runner-valid and quality-complete")
+    if configuration.get("trials", 0) < 3:
+        raise ValueError("run: promotion evidence must contain at least 3 trials")
+    tasks_path = retained_file(run_dir, "tasks.jsonl", "run tasks")
+    if hash_file(tasks_path) != configuration.get("tasks_sha256"):
+        raise ValueError("run: retained tasks hash does not match the promotion plan")
+    if output.exists():
+        raise ValueError(f"output directory already exists: {output}")
+
+    items: list[dict[str, Any]] = []
+    copied: list[tuple[Path, Path]] = []
+    for pair in run.get("pairs", []):
+        if not isinstance(pair, dict):
+            raise ValueError("run field pairs: must contain objects")
+        task_id = required_string(pair.get("task_id"), "run pair field task_id")
+        safe_task_id(task_id)
+        trial = pair.get("trial")
+        if not isinstance(trial, int) or trial < 1:
+            raise ValueError("run pair field trial: must be a positive integer")
+        report_path = retained_file(run_dir, pair.get("report_json"), "run pair report_json")
+        report = load_json_object(report_path, "pair report")
+        if not report.get("runner_valid"):
+            raise ValueError(f"run pair {task_id} trial {trial}: runner is invalid")
+        pairwise = report.get("pairwise")
+        if not isinstance(pairwise, list) or not pairwise:
+            raise ValueError(f"run pair {task_id} trial {trial}: missing pairwise evidence")
+        for index, judgment in enumerate(pairwise, start=1):
+            if not isinstance(judgment, dict) or judgment.get("status") == "unknown":
+                raise ValueError(
+                    f"run pair {task_id} trial {trial} rubric {index}: judgment is incomplete"
+                )
+            artifacts = judgment.get("artifacts")
+            if not isinstance(artifacts, dict):
+                raise ValueError(
+                    f"run pair {task_id} trial {trial} rubric {index}: missing artifacts"
+                )
+            prompt_path = retained_file(report_path.parent, artifacts.get("prompt"), "judge prompt")
+            dimensions = judgment.get("dimensions")
+            if not isinstance(dimensions, list) or not dimensions:
+                raise ValueError(
+                    f"run pair {task_id} trial {trial} rubric {index}: missing dimensions"
+                )
+            dimension_names = [
+                required_string(dimension.get("name"), "judge dimension field name")
+                for dimension in dimensions
+                if isinstance(dimension, dict)
+            ]
+            if len(dimension_names) != len(dimensions):
+                raise ValueError("judge dimensions: must contain objects")
+            item_id = f"{task_id}.trial-{trial:03d}.rubric-{index:03d}"
+            destination = Path("items") / f"{item_id}.txt"
+            copied.append((prompt_path, destination))
+            items.append(
+                {
+                    "id": item_id,
+                    "task_id": task_id,
+                    "trial": trial,
+                    "rubric_index": index,
+                    "prompt": destination.as_posix(),
+                    "prompt_sha256": hash_file(prompt_path),
+                    "dimensions": dimension_names,
+                    "source_report": str(
+                        report_path.resolve().relative_to(run_dir.resolve()).as_posix()
+                    ),
+                }
+            )
+    if not items:
+        raise ValueError("run: no pairwise evidence is available for human review")
+
+    output.mkdir(parents=True)
+    for source, relative in copied:
+        destination = output / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    manifest = {
+        "version": 1,
+        "run_sha256": hash_file(run_path),
+        "tasks_sha256": configuration["tasks_sha256"],
+        "required_reviewers": 2,
+        "items": items,
+    }
+    manifest_path = output / "manifest.json"
+    write_json(manifest_path, manifest)
+    write_json(
+        output / "labels-template.json",
+        {
+            "version": 1,
+            "manifest_sha256": hash_file(manifest_path),
+            "reviewer_id": "",
+            "labels": [
+                {
+                    "item_id": item["id"],
+                    "prompt_sha256": item["prompt_sha256"],
+                    "winner": "",
+                    "rationale": "",
+                    "transcript_reviewed": False,
+                    "dimensions": [
+                        {"name": name, "winner": "", "rationale": ""}
+                        for name in item["dimensions"]
+                    ],
+                }
+                for item in items
+            ],
+        },
+    )
+    print_json(
+        {
+            "valid": True,
+            "mode": "prepare_review",
+            "output_dir": str(output),
+            "items": len(items),
+            "required_reviewers": 2,
+        }
+    )
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(prog="skill-eval-loop")
     commands = result.add_subparsers(dest="command", required=True)
@@ -1843,6 +1991,12 @@ def parser() -> argparse.ArgumentParser:
     calibrate_parser.add_argument("--timeout-seconds", type=int, default=120)
     calibrate_parser.add_argument("--dry-run", action="store_true")
     calibrate_parser.set_defaults(handler=calibrate)
+    review_parser = commands.add_parser(
+        "prepare-review", help="create a blinded human-review packet from a promotion run"
+    )
+    review_parser.add_argument("--run-dir", required=True)
+    review_parser.add_argument("--output", required=True)
+    review_parser.set_defaults(handler=prepare_review)
     return result
 
 
