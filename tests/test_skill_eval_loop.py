@@ -205,6 +205,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             plan = json.loads(result.stdout)
             self.assertTrue(plan["valid"])
             self.assertFalse(plan["created_artifacts"])
+            self.assertEqual(plan["configuration"]["intervention"], "injected_skill_instructions")
             self.assertEqual(plan["counts"]["total_invocations"], 15)
             self.assertEqual(
                 plan["task_snapshot"][0]["graders"][1]["dimensions"][0]["name"],
@@ -243,6 +244,36 @@ class SkillEvalLoopCliTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1)
             self.assertIn("require a response_not_empty preflight", result.stderr)
+
+    def test_dry_run_rejects_a_path_unsafe_task_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                '{"id":"../escape","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+
+            result = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(root / "new-run"),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+                "--dry-run",
+            )
+
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("must be path-safe", result.stderr)
 
     def test_dry_run_rejects_invalid_rubric_dimensions(self) -> None:
         cases = [
@@ -323,6 +354,127 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["configuration"]["tasks_path"], str(tasks))
 
+    def test_promotion_requires_explicit_tasks_and_repeated_trials(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            evals = skill / "evals"
+            evals.mkdir()
+            (evals / "tasks.jsonl").write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+
+            missing_tasks = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--output",
+                str(root / "missing-tasks"),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+                "--trials",
+                "3",
+                "--promotion",
+                "--dry-run",
+            )
+
+            self.assertEqual(missing_tasks.returncode, 1)
+            self.assertIn("explicit independently controlled tasks path", missing_tasks.stderr)
+
+            tasks = evals / "tasks.jsonl"
+            too_few_trials = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(root / "too-few-trials"),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+                "--trials",
+                "2",
+                "--promotion",
+                "--dry-run",
+            )
+
+            self.assertEqual(too_few_trials.returncode, 1)
+            self.assertIn("at least 3 trials", too_few_trials.stderr)
+
+    def test_promotion_plan_records_role_and_requires_rubric_calibration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            deterministic_tasks = root / "deterministic.jsonl"
+            deterministic_tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+
+            result = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(deterministic_tasks),
+                "--output",
+                str(root / "promotion"),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+                "--trials",
+                "3",
+                "--promotion",
+                "--dry-run",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plan = json.loads(result.stdout)
+            self.assertEqual(plan["configuration"]["evaluation_role"], "promotion")
+            self.assertEqual(plan["counts"]["paired_trials"], 3)
+
+            rubric_tasks = root / "rubric.jsonl"
+            rubric_tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"response_not_empty"},{"type":"rubric","dimensions":[{"name":"choice","levels":[{"name":"not_met","description":"Does not choose Blue."},{"name":"met","description":"Chooses Blue."}]}]}]}\n',
+                encoding="utf-8",
+            )
+            uncalibrated = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(rubric_tasks),
+                "--output",
+                str(root / "uncalibrated-promotion"),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "runner-model",
+                "--judge-model",
+                "judge-model",
+                "--trials",
+                "3",
+                "--promotion",
+                "--dry-run",
+            )
+
+            self.assertEqual(uncalibrated.returncode, 1)
+            self.assertIn("require accepted calibration", uncalibrated.stderr)
+
     def test_dry_run_requires_explicit_or_target_owned_tasks_before_harness_resolution(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -389,6 +541,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 encoding="utf-8",
             )
             output = root / "run"
+            cwd_log = root / "runner-cwds.txt"
             host_skill = root / "user-home" / ".codex" / "skills" / "target-skill"
             host_skill.mkdir(parents=True)
             (host_skill / "SKILL.md").write_text("---\nname: target-skill\n---\n", encoding="utf-8")
@@ -418,14 +571,14 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 text=True,
                 capture_output=True,
                 check=False,
-                env=self.isolated_env(root),
+                env=self.isolated_env(root, {"SIMPLE_FAKE_CWD_LOG": str(cwd_log)}),
             )
 
             self.assertEqual(result.returncode, 1, result.stderr)
             report = json.loads(result.stdout)
             self.assertTrue(report["valid"])
             self.assertEqual(report["quality_status"], "not_required")
-            self.assertEqual(report["activation"]["status"], "unknown")
+            self.assertEqual(report["activation"]["status"], "observed")
             self.assertEqual(report["calibration_status"], "not_run")
             self.assertEqual(len(report["pairs"]), 2)
             self.assertEqual(report["pairs"][0]["execution_order"], ["control", "treatment"])
@@ -436,9 +589,10 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertTrue((first_pair / "treatment" / "response.md").is_file())
             pair_report = json.loads((first_pair / "report.json").read_text(encoding="utf-8"))
             self.assertTrue(pair_report["runner_valid"])
+            self.assertEqual(pair_report["intervention"], "injected_skill_instructions")
             self.assertEqual(pair_report["quality_status"], "not_required")
             self.assertEqual(pair_report["quality_outcome"], "not_judged")
-            self.assertEqual(pair_report["activation"]["status"], "unknown")
+            self.assertEqual(pair_report["activation"]["status"], "observed")
             self.assertEqual(pair_report["calibration_status"], "not_run")
             self.assertEqual(pair_report["deterministic_comparison"], "treatment_only")
             self.assertTrue(pair_report["isolation"]["control_skill_absent"])
@@ -446,12 +600,24 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertTrue(
                 pair_report["isolation"]["treatment_installed_source_hash_match"]
             )
-            self.assertTrue((output / "codex-home").is_dir())
-            self.assertFalse((output / "codex-home" / "auth.json").exists())
+            self.assertFalse((output / "codex-home").exists())
             self.assertNotIn("auth.json", (first_pair / "report.json").read_text(encoding="utf-8"))
             markdown = (first_pair / "report.md").read_text(encoding="utf-8")
+            self.assertIn("Intervention: injected_skill_instructions", markdown)
             self.assertIn("Semantic quality was not judged.", markdown)
-            self.assertIn("Activation: unknown (telemetry_unavailable)", markdown)
+            self.assertIn("Activation: observed (skill_instructions_injected)", markdown)
+            control_stderr = (first_pair / "control" / "stderr.txt").read_text(encoding="utf-8")
+            treatment_stderr = (first_pair / "treatment" / "stderr.txt").read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("<skill_instructions", control_stderr)
+            self.assertIn('<skill_instructions name="target-skill"', treatment_stderr)
+            self.assertIn("<task>\nChoose Blue.\n</task>", treatment_stderr)
+            runner_cwds = [Path(item) for item in cwd_log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(len(runner_cwds), 4)
+            self.assertTrue(all(ROOT not in path.parents for path in runner_cwds))
+            self.assertTrue(all(output not in path.parents for path in runner_cwds))
+            self.assertTrue(all(not path.exists() for path in runner_cwds))
 
     def test_live_run_copies_host_auth_json_only_during_the_run(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -494,8 +660,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 1, result.stderr)
             self.assertEqual(set(auth_log.read_text(encoding="utf-8").splitlines()), {"present"})
-            self.assertTrue((output / "codex-home").is_dir())
-            self.assertFalse((output / "codex-home" / "auth.json").exists())
+            self.assertFalse((output / "codex-home").exists())
             report_text = (output / "task-choice" / "trial-001" / "report.json").read_text(encoding="utf-8")
             self.assertNotIn("secret", report_text)
             self.assertNotIn("auth.json", report_text)
@@ -562,8 +727,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                             with self.assertRaisesRegex(OSError, "task copy failed"):
                                 evaluator.run_live(plan)
 
-                self.assertTrue((output / "codex-home").is_dir())
-                self.assertFalse((output / "codex-home" / "auth.json").exists())
+                self.assertFalse((output / "codex-home").exists())
 
     def test_calibrate_discards_auth_when_config_initialization_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -606,8 +770,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                     with self.assertRaisesRegex(OSError, "config write failed"):
                         evaluator.run_calibrate(plan)
 
-            self.assertTrue((output / "codex-home").is_dir())
-            self.assertFalse((output / "codex-home" / "auth.json").exists())
+            self.assertFalse((output / "codex-home").exists())
 
     def test_live_run_marks_model_mismatch_invalid_and_preserves_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -660,12 +823,15 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             summary = json.loads(result.stdout)
             self.assertTrue(summary["valid"])
             self.assertEqual(summary["quality_status"], "provisional_non_independent")
+            self.assertEqual(summary["usage"]["measured_invocations"], 5)
+            self.assertEqual(summary["usage"]["total_tokens"], 65)
             report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertEqual(report["usage"], summary["usage"])
             self.assertEqual(report["rubric_status"], "provisional_non_independent")
             self.assertEqual(report["pairwise_status"], "provisional_non_independent")
             self.assertEqual(report["quality_status"], "provisional_non_independent")
             self.assertEqual(report["quality_outcome"], report["pairwise"][0]["winner_condition"])
-            self.assertEqual(report["activation"]["status"], "unknown")
+            self.assertEqual(report["activation"]["status"], "observed")
             self.assertEqual(report["calibration_status"], "accepted")
             self.assertIsNotNone(report["fixtures_sha256"])
             names = {item["name"] for item in report["dimension_results"]}
@@ -689,6 +855,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 set(payload),
                 {"task_prompt", "candidate_A", "candidate_B", "dimensions"},
             )
+            pair_dir = output / "task-choice" / "trial-001"
             for condition in report["conditions"]:
                 judgment = condition["rubric_judgments"][0]
                 self.assertEqual(judgment["status"], "provisional_non_independent")
@@ -696,9 +863,14 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 self.assertEqual(judgment["execution"]["requested_model"], "gpt-5.6-sol")
                 self.assertEqual(judgment["execution"]["trace_reported_model"], "gpt-5.6-sol")
                 self.assertEqual(judgment["execution"]["model_identity_source"], "trace_reported")
-                judge_dir = output / "task-choice" / "trial-001" / condition["name"] / "judge-001"
-                self.assertTrue((judge_dir / "trace.jsonl").is_file())
-                self.assertTrue((judge_dir / "response.txt").is_file())
+                self.assertEqual(
+                    judgment["artifacts"]["prompt"],
+                    f"{condition['name']}/judge-001/prompt.txt",
+                )
+                for relative in judgment["artifacts"].values():
+                    self.assertTrue((pair_dir / relative).is_file(), relative)
+            for relative in pairwise["artifacts"].values():
+                self.assertTrue((pair_dir / relative).is_file(), relative)
 
     def test_live_rubric_judge_keeps_missing_trace_model_unattested(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -772,7 +944,123 @@ class SkillEvalLoopCliTests(unittest.TestCase):
                 report["conditions"][0]["rubric_judgments"][0]["reason"],
                 "deterministic_gate_failed",
             )
-            self.assertEqual(invocation_log.read_text(encoding="utf-8").splitlines(), ["runner", "runner"])
+
+    def test_live_rubric_judge_runs_when_injected_skill_needs_no_trace_read(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            invocation_log = root / "invocations.txt"
+            result, _, report_path = self.run_live_rubric(
+                root,
+                extra_env={
+                    "SIMPLE_FAKE_INVOCATION_LOG": str(invocation_log),
+                    "SIMPLE_FAKE_SKIP_SKILL_READ": "1",
+                },
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+            self.assertTrue(report["runner_valid"])
+            self.assertEqual(report["activation"]["status"], "observed")
+            treatment = next(
+                condition for condition in report["conditions"] if condition["name"] == "treatment"
+            )
+            self.assertFalse(treatment["activation"]["trace_skill_read"])
+            self.assertEqual(report["quality_status"], "provisional_non_independent")
+            self.assertEqual(
+                invocation_log.read_text(encoding="utf-8").splitlines(),
+                ["runner", "runner", "judge", "judge", "pairwise"],
+            )
+
+    def test_all_codex_roles_use_cleaned_workspaces_outside_retained_output(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cwd_log = root / "role-cwds.txt"
+
+            result, output, _ = self.run_live_rubric(
+                root,
+                extra_env={"SIMPLE_FAKE_ROLE_CWD_LOG": str(cwd_log)},
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            entries = [line.split("\t", 1) for line in cwd_log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual(
+                [role for role, _ in entries],
+                ["runner", "runner", "judge", "judge", "pairwise"],
+            )
+            workspaces = [Path(path).resolve() for _, path in entries]
+            self.assertTrue(all(ROOT.resolve() not in workspace.parents for workspace in workspaces))
+            self.assertTrue(all(output.resolve() not in workspace.parents for workspace in workspaces))
+            self.assertTrue(all(not workspace.exists() for workspace in workspaces))
+
+    def test_codex_runtime_is_the_shared_target_and_judge_test_surface(self) -> None:
+        spec = importlib.util.spec_from_file_location("skill_eval_loop_runtime", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            pair_dir = root / "retained" / "task-choice" / "trial-001"
+            codex_home = root / "codex-home"
+            codex_home.mkdir()
+            cwd_log = root / "runtime-cwds.txt"
+            runtime = evaluator.CodexRuntime(
+                codex_home,
+                {
+                    "harness_executable": str(FAKE_CODEX),
+                    "model": "runner-model",
+                    "judge_model": "judge-model",
+                    "timeout_seconds": 1,
+                },
+            )
+            task = {
+                "id": "choice",
+                "prompt": "Choose Blue.",
+                "graders": [{"type": "response_not_empty"}],
+            }
+
+            with patch.dict(
+                os.environ,
+                {"SIMPLE_FAKE_ROLE_CWD_LOG": str(cwd_log)},
+                clear=False,
+            ):
+                control, control_isolation = runtime.run_condition(
+                    condition="control",
+                    pair_dir=pair_dir,
+                    skill=skill,
+                    skill_hash=evaluator.hash_skill(skill),
+                    skill_name=skill.name,
+                    task=task,
+                )
+                treatment, treatment_isolation = runtime.run_condition(
+                    condition="treatment",
+                    pair_dir=pair_dir,
+                    skill=skill,
+                    skill_hash=evaluator.hash_skill(skill),
+                    skill_name=skill.name,
+                    task=task,
+                )
+                judgment, _ = runtime.invoke_judge(
+                    judge_dir=pair_dir / "judge-001",
+                    artifact_root=pair_dir,
+                    prompt="Judge this response.",
+                    role="judge",
+                )
+
+            self.assertEqual(control["execution"]["status"], "completed")
+            self.assertEqual(treatment["execution"]["status"], "completed")
+            self.assertTrue(control_isolation["control_skill_absent"])
+            self.assertTrue(treatment_isolation["treatment_hash_matches"])
+            self.assertEqual(judgment["reason"], "")
+            self.assertEqual(
+                judgment["artifacts"]["prompt"],
+                "judge-001/prompt.txt",
+            )
+            entries = [line.split("\t", 1) for line in cwd_log.read_text(encoding="utf-8").splitlines()]
+            self.assertEqual([role for role, _ in entries], ["runner", "runner", "judge"])
+            self.assertTrue(all(not Path(path).exists() for _, path in entries))
 
     def test_pairwise_judge_is_skipped_when_per_output_judgment_is_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -854,6 +1142,120 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             markdown = (output / "task-choice" / "trial-001" / "report.md").read_text(encoding="utf-8")
             self.assertIn("Quality outcome: inconsistent", markdown)
             self.assertIn("pairwise / safe choice: B", markdown)
+
+    def test_pairwise_tied_dimension_is_compatible_with_aggregate_winner(self) -> None:
+        spec = importlib.util.spec_from_file_location("skill_eval_loop_outcome", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+
+        outcome = evaluator.quality_outcome_for(
+            [
+                {
+                    "winner_condition": "control",
+                    "mapping": {"A": "control", "B": "treatment"},
+                    "dimensions": [
+                        {"winner": "tie"},
+                        {"winner": "A"},
+                    ],
+                }
+            ],
+            "provisional_non_independent",
+        )
+
+        self.assertEqual(outcome, "control")
+
+    def test_trace_records_successful_target_skill_read_as_activation(self) -> None:
+        spec = importlib.util.spec_from_file_location("skill_eval_loop_activation", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            trace = Path(temporary) / "trace.jsonl"
+            trace.write_text(
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "sed -n '1,200p' .agents/skills/target-skill/SKILL.md",
+                            "exit_code": 0,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            observed = evaluator.parse_trace(trace, skill_name="target-skill")
+
+        self.assertTrue(observed["skill_accessed"])
+
+    def test_trace_records_skill_read_when_later_compound_command_fails(self) -> None:
+        spec = importlib.util.spec_from_file_location("skill_eval_loop_activation", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            trace = Path(temporary) / "trace.jsonl"
+            trace.write_text(
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": (
+                                "sed -n '1,200p' .agents/skills/target-skill/SKILL.md "
+                                "&& sed -n '1,200p' missing.md"
+                            ),
+                            "aggregated_output": (
+                                "---\nname: target-skill\ndescription: Test skill.\n---\n"
+                                "sed: missing.md: No such file or directory\n"
+                            ),
+                            "exit_code": 1,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            observed = evaluator.parse_trace(trace, skill_name="target-skill")
+
+        self.assertTrue(observed["skill_accessed"])
+
+    def test_trace_does_not_treat_skill_directory_listing_as_activation(self) -> None:
+        spec = importlib.util.spec_from_file_location("skill_eval_loop_activation", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            trace = Path(temporary) / "trace.jsonl"
+            trace.write_text(
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "find .agents/skills/target-skill -maxdepth 1 -type f",
+                            "exit_code": 0,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            observed = evaluator.parse_trace(trace, skill_name="target-skill")
+
+        self.assertFalse(observed["skill_accessed"])
 
     def test_rubric_run_without_calibration_stays_quality_unknown(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1143,8 +1545,28 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertTrue(summary["accepted"])
             self.assertEqual(summary["agreements"], 3)
             self.assertEqual(summary["disagreements"], [])
+            self.assertEqual(summary["usage"]["measured_invocations"], 3)
+            self.assertEqual(summary["usage"]["total_tokens"], 39)
             retained = json.loads((output / "calibration.json").read_text(encoding="utf-8"))
             self.assertEqual(retained["accepted"], True)
+
+    def test_calibrate_fails_fast_after_infrastructure_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            invocation_log = root / "invocations.txt"
+            result, output = self.run_calibrate(
+                root,
+                extra_env={
+                    "SIMPLE_FAKE_INFRA_FAILURE": "1",
+                    "SIMPLE_FAKE_INVOCATION_LOG": str(invocation_log),
+                },
+            )
+
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertEqual(invocation_log.read_text(encoding="utf-8").splitlines(), ["pairwise"])
+            self.assertIn("PROGRESS:", result.stderr)
+            retained = json.loads((output / "calibration.json").read_text(encoding="utf-8"))
+            self.assertEqual(retained["cases"][0]["reason"], "infrastructure_failed")
             self.assertTrue((output / "known-better" / "prompt.txt").is_file())
             prompt = (output / "known-better" / "prompt.txt").read_text(encoding="utf-8")
             self.assertNotIn("better", prompt.split("\n\n", 1)[0])
@@ -1168,6 +1590,78 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertTrue(summary["disagreements"][0]["rationale"])
             retained = json.loads((output / "calibration.json").read_text(encoding="utf-8"))
             self.assertFalse(retained["accepted"])
+
+    def test_promotion_rejects_tasks_equal_or_beneath_skill_through_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = skill / "holdout.jsonl"
+            tasks.write_text('{"id":"choice","prompt":"Choose.","graders":[{"type":"regex","pattern":"Blue"}]}\n')
+            alias = root / "alias"
+            alias.symlink_to(skill, target_is_directory=True)
+            result = self.run_cli("run", "--skill", str(skill), "--tasks", str(alias / tasks.name), "--output", str(root / "out"), "--harness", "codex", "--harness-bin", str(FAKE_CODEX), "--model", "m", "--trials", "3", "--promotion", "--dry-run")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("outside the target skill", result.stderr)
+
+    def test_task_ids_collide_after_unicode_normalization_and_casefold(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text("\n".join([
+                '{"id":"Café","prompt":"One.","graders":[{"type":"regex","pattern":"x"}]}',
+                '{"id":"café","prompt":"Two.","graders":[{"type":"regex","pattern":"x"}]}',
+            ]) + "\n", encoding="utf-8")
+            result = self.run_cli("run", "--skill", str(skill), "--tasks", str(tasks), "--output", str(root / "out"), "--harness", "codex", "--harness-bin", str(FAKE_CODEX), "--model", "m", "--dry-run")
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("duplicate value", result.stderr)
+
+    def test_markdown_artifact_links_resolve_from_pair_report_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            result, output, report_path = self.run_live_rubric(Path(temporary))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            pair_dir = report_path.parent
+            markdown = (pair_dir / "report.md").read_text(encoding="utf-8")
+            import re
+            links = re.findall(r"\]\(([^)]+)\)", markdown)
+            self.assertTrue(links)
+            self.assertTrue(all((pair_dir / link).is_file() for link in links), links)
+
+    def test_tink_source_receipt_is_not_payload_hash_or_treatment_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            spec = importlib.util.spec_from_file_location("skill_eval_loop_receipt", EVALUATOR)
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            evaluator = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(evaluator)
+            before = evaluator.hash_skill(skill)
+            (skill / ".tink-source.json").write_text('{"managed":true}\n', encoding="utf-8")
+            self.assertEqual(before, evaluator.hash_skill(skill))
+            destination = root / "copied"
+            evaluator.copy_skill_payload(skill, destination)
+            self.assertFalse((destination / ".tink-source.json").exists())
+
+    def test_evals_and_tests_are_not_payload_hash_or_treatment_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            spec = importlib.util.spec_from_file_location("skill_eval_loop_payload", EVALUATOR)
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            evaluator = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(evaluator)
+            before = evaluator.hash_skill(skill)
+            for directory in ("evals", "tests"):
+                excluded = skill / directory
+                excluded.mkdir()
+                (excluded / "extra.txt").write_text("ignored\n", encoding="utf-8")
+            self.assertEqual(before, evaluator.hash_skill(skill))
+            destination = root / "copied"
+            evaluator.copy_skill_payload(skill, destination)
+            self.assertFalse((destination / "evals").exists())
+            self.assertFalse((destination / "tests").exists())
 
 
 if __name__ == "__main__":
