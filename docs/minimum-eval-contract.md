@@ -321,9 +321,20 @@ human labels for the rubric or preference decisions, and measured agreement
 between those labels and any automated judge. A visible development suite must
 not be relabeled as a holdout after it has guided changes.
 
-The remaining real-promotion gate is external to this runner: independently
-control the holdout, obtain human labels, repeat trials, and review the retained
-transcripts before making a promotion claim.
+After a quality-complete promotion run, `prepare-review` creates a hash-bound
+packet containing only the blinded A/B prompts and empty templates. The
+custodian attests task-hash-bound independence, development secrecy, and
+coverage of positive, negative, ambiguous, near-tie, and adversarial cases. Two
+distinct reviewers label every transcript and dimension independently with
+rationale. `finalize-review` verifies those inputs against the retained run,
+measures human and automated-judge agreement, restores condition outcomes,
+reports variance by task, regressions, usage, and operator-recorded cost, and
+retains limitations. See the packaged
+[promotion workflow](../skills/skill-eval-loop/references/promotion-workflow.md).
+
+The machine cannot authenticate human identity or custody claims. A complete
+review package is evidence for the accountable owner; it is not an automatic
+promotion verdict.
 
 A one-task pilot can establish runner acceptance. It cannot establish that a
 skill is generally effective. Capability suites should contain enough

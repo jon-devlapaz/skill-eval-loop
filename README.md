@@ -121,12 +121,25 @@ python3 skills/skill-eval-loop/scripts/skill_eval_loop.py calibrate \
 `calibrate` exits `0` when agreements meet the locked threshold, `1` when the
 runner is valid but the judge disagrees, and `2` when a judgment is invalid.
 
+## Complete a promotion review
+
+A business-ready promotion result requires more than `run --promotion`. Use the
+[promotion evidence workflow](skills/skill-eval-loop/references/promotion-workflow.md)
+to create a blinded packet, collect two independent human label files and the
+custodian's holdout
+attestation, then run `finalize-review`. The final report measures human and
+automated-judge agreement, outcomes across trials, regressions, usage, and
+recorded cost while leaving the promotion decision with the accountable human
+owner.
+
 ## Boundaries
 
 The minimum runner supports Codex, deterministic graders, a provisional
-same-provider rubric judge, blinded pairwise comparison, and human-labeled
-calibration fixtures. It does not provide independent judging, pricing,
-parallel execution, provider discovery, or adapters for other harnesses.
+same-provider rubric judge, blinded pairwise comparison, human-labeled
+calibration fixtures, and hash-bound two-reviewer promotion evidence. It records
+operator-supplied cost; it does not discover pricing, provide an independent
+automated judge, authenticate human identities, run in parallel, discover
+providers, or adapt other harnesses.
 
 Live evaluation is a trusted local-operator workflow. The configured harness
 and Codex executable can read the run-local Codex credentials and therefore

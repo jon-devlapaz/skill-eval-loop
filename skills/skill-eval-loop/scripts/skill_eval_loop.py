@@ -1797,7 +1797,12 @@ def calibration_exit_code(result: dict[str, Any]) -> int:
 
 def healthcheck(arguments: argparse.Namespace) -> int:
     root = Path(arguments.skill_dir).resolve() if arguments.skill_dir else Path(__file__).resolve().parents[1]
-    required = ["SKILL.md", "scripts/skill_eval_loop.py", "scripts/skill-eval-loop"]
+    required = [
+        "SKILL.md",
+        "scripts/skill_eval_loop.py",
+        "scripts/skill-eval-loop",
+        "references/promotion-workflow.md",
+    ]
     missing = [relative for relative in required if not (root / relative).is_file()]
     print_json(
         {
