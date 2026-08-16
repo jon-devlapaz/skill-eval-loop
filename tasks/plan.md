@@ -23,9 +23,9 @@ control/treatment baseline, semantic grading, multi-dimensional rubrics,
 - Use the existing Codex authentication for the first semantic path, label all
   OpenAI-to-OpenAI results provisional and non-independent, and do not claim
   independence until a different provider or human calibration supplies it.
-- Treat availability of the exact hashed skill payload as the intervention.
-  Activation telemetry is optional diagnostic evidence, not a quality score or
-  a gate on the outcome comparison.
+- Treat evaluator-owned injection of the exact hashed skill's `SKILL.md` as the
+  intervention. Keep the control task untouched and the installed treatment
+  payload available for referenced files.
 - Give each live run a private Codex home under `$output/codex-home`. Copy
   only `~/.codex/auth.json` when present. Do not reuse the user's Codex home
   as the experiment environment.
@@ -81,22 +81,23 @@ outcomes.
 ## Task 2: Confirm intervention semantics
 
 **Description:** Confirm what the paired experiment changes and what it may
-claim. The intervention is access to the exact hashed skill payload. Activation
-telemetry can diagnose how Codex used that access, but is not required for an
-outcome comparison and must not become a path-based quality metric.
+claim. The intervention is injection of the exact hashed skill's main
+instructions: the control receives the original task and treatment receives
+those instructions plus access to the installed payload.
 
 **Acceptance criteria:**
-- [x] Control absence, treatment presence, and treatment/source hash equality
-  define the isolated intervention.
-- [x] Missing activation telemetry does not invalidate an outcome comparison.
-- [x] Claims are limited to the measured effect of skill access under the
-  retained configuration.
+- [x] Control absence, treatment presence, treatment/source hash equality, and
+  treatment-only instruction injection define the intervention.
+- [x] Evaluator-owned delivery is recorded independently of optional skill-read
+  trace telemetry.
+- [x] Claims are limited to the measured effect of injected skill instructions
+  under the retained configuration.
 
 **Verification:**
 - [x] A controlled fixture asserts control absence, treatment presence, and
   treatment/source hash equality.
-- [x] Manual check: Codex CLI 0.147.0 treatment trace exposes no activation
-  event; this remains diagnostic rather than a gate.
+- [x] A fake-harness regression proves treatment delivery does not depend on a
+  model-side file read.
 - [x] Human review accepted the outcome-based evidence definition.
 
 **Dependencies:** None.
@@ -106,12 +107,13 @@ outcome comparison and must not become a path-based quality metric.
 - `skills/skill-eval-loop/SKILL.md`
 - `docs/minimum-eval-contract.md`
 
-**Result:** Resolved without activation machinery.
+**Result:** Treatment instruction delivery and payload isolation are part of
+runner validity; model-side reads are retained as optional telemetry.
 
 ### Checkpoint: Evidence contract
 
 - [x] Tasks 1 and 2 are complete.
-- [x] Deterministic validity, exact skill availability, and quality evidence
+- [x] Deterministic validity, injected skill exposure, and quality evidence
   remain separate concepts.
 - [x] Human approves `gpt-5.6-sol` as the provisional judge for
   `gpt-5.6-terra` runs, without an independence claim.
@@ -137,13 +139,12 @@ and raw output, and label same-provider results as non-independent.
 - [x] Tests pass: `python3 -m unittest discover -s tests -v`.
 - [x] Focused fake-adapter tests cover success, malformed response, timeout,
   identity mismatch, and deterministic short-circuiting.
-- [ ] Manual check: inspect a retained live judge trace with the selected
+- [x] Manual check: inspect a retained live judge trace with the selected
   provider after separate authorization.
 
 **Dependencies:** Tasks 1 and 2; human approval of the provisional pairing.
 
-**Result:** Implementation complete with fake-adapter evidence. Live provider
-verification remains part of the later authorized pilot.
+**Result:** Implementation and authorized live-provider verification complete.
 
 **Files likely touched:**
 - `skills/skill-eval-loop/scripts/skill_eval_loop.py`
@@ -173,13 +174,14 @@ host Codex home. Land this before any authorized live Codex run.
 - [x] Tests pass: `python3 -m unittest discover -s tests -v`.
 - [x] Focused tests assert the subprocess `CODEX_HOME` path and that fake
   runs no longer need `CODEX_HOME` in the caller environment.
-- [ ] Manual check: one authorized live exec with only copied `auth.json`
-  remains deferred to the later pilot.
+- [x] Manual check: an authorized live exec used the runtime credential and
+  removed the entire run-local Codex home afterward.
 
 **Dependencies:** Task 3.
 
-**Result:** Implementation complete with fake-adapter evidence. Live provider
-verification remains part of the later authorized pilot.
+**Result:** Implementation and authorized live-provider verification complete.
+Target, judge, and calibration roles now share one `CodexRuntime` process and
+cleaned OS-temporary workspace lifecycle, preventing role-specific isolation drift.
 
 **Files likely touched:**
 - `skills/skill-eval-loop/scripts/skill_eval_loop.py`
@@ -205,13 +207,12 @@ report.
 **Verification:**
 - [x] Tests pass: `python3 -m unittest discover -s tests -v`.
 - [x] Focused tests prove condition labels cannot enter the judge payload.
-- [ ] Manual check: compare the retained blind prompt, raw judgment, and
+- [x] Manual check: compare the retained blind prompt, raw judgment, and
   restored report.
 
 **Dependencies:** Tasks 1 and 3.
 
-**Result:** Implementation complete with fake-adapter evidence. Live prompt and
-restored-report review remains part of the later authorized pilot.
+**Result:** Implementation and authorized live prompt/report review complete.
 
 **Files likely touched:**
 - `skills/skill-eval-loop/scripts/skill_eval_loop.py`
@@ -248,13 +249,12 @@ critical failed or unknown dimension.
 **Verification:**
 - [x] Tests pass: `python3 -m unittest discover -s tests -v`.
 - [x] Focused report fixtures cover pass, tie, failed critical dimension,
-  unavailable judge, and activation unknown.
-- [ ] Manual check: inspect JSON and Markdown reports for the same pair.
+  unavailable judge, and runner-invalid isolation failures.
+- [x] Manual check: inspect JSON and Markdown reports for the same pair.
 
 **Dependencies:** Tasks 2, 3, and 4.
 
-**Result:** Implementation complete with fake-adapter evidence. Live report
-inspection remains part of the later authorized pilot.
+**Result:** Implementation and authorized live report inspection complete.
 
 **Files likely touched:**
 - `skills/skill-eval-loop/scripts/skill_eval_loop.py`
@@ -289,10 +289,11 @@ then run one real paired pilot only if calibration accepts the chosen judge.
 **Result:** Calibration command and v1 fixtures are complete. Live `gpt-5.6-sol`
 calibration against the locked cases accepted 3/3 with no disagreements.
 Codex 0.147.0 `exec --json` traces do not report a model; missing identity is
-unattested CLI configuration, not a failed judgment. One paired live pilot
-reported runner validity, activation unknown, deterministic both_pass, per-
-dimension rubric scores, and a blinded pairwise tie. That is not a skill-
-quality claim. Judge evidence remains same-provider and non-independent.
+  unattested CLI configuration, not a failed judgment. One paired live pilot
+  under the superseded availability-only intervention reported activation
+  unknown, deterministic both_pass, per-dimension rubric scores, and a blinded
+  pairwise tie. It is retained as historical evidence, not an applied-skill
+  quality claim. Judge evidence remains same-provider and non-independent.
 
 **Files likely touched:**
 - `tests/fixtures/`
@@ -316,57 +317,66 @@ quality claim. Judge evidence remains same-provider and non-independent.
 
 | Risk | Impact | Mitigation |
 |---|---|---|
-| Codex exposes no activation telemetry | High | Stop at Task 2 and narrow the claim rather than infer use. |
+| Codex does not open the installed `SKILL.md` | Low | Inject the exact main instructions in treatment; retain file-read events only as telemetry. |
 | No independent judge is available | High | Label OpenAI-only evidence provisional and require human calibration before broader claims. |
 | Judge prompt leaks condition labels | High | Build prompt from anonymized candidates and test the raw payload. |
 | Rubric is gamed or too vague | High | Lock it before runs and calibrate against human-labeled cases. |
 | Pilot is saturated or too small | Medium | Report tie/no-signal and expand only after calibration. |
 | Host Codex home leaks extra skills | High | Use a run-local `$output/codex-home` and copy only `auth.json`. |
-| Copied `auth.json` is published as evidence | High | Treat it as runtime-only; keep it out of reports and condition artifacts. |
+| A hostile harness reads or echoes `auth.json` | High | Live runs are trusted local-operator workflows; hostile-process isolation is a separate system. Keep raw artifacts local and inspect before sharing. |
 
 ## Open questions
 
 - Which provider or human calibration process will supply independent evidence
   beyond the provisional OpenAI judge?
-- What activation evidence can current Codex emit, if any?
+- Do referenced multi-file skills require an additional fixture before promotion use?
 - Which human-approved threshold should calibration meet before a pilot result
   is considered quality evidence?
 
-## Phase 2: Karpathy hill climb (next agent)
+## Phase 2: Validate one public skill
 
-**Baseline:** branch `python-core-redesign`, no upstream. Tasks 1–6 code and
-docs are committed. `python3 -m unittest discover -s tests -v` is green (22
-tests). Live artifacts under `.eval-runs/` are gitignored: `calibrate-v1b`
-accepted 3/3 (still `provisional_non_independent`); `pilot-v1` was a saturated
-toy (“Choose Blue.” / pairwise tie). Codex CLI 0.147.0 traces omit model
-identity; missing identity is unattested, not fail-closed.
+**Objective:** Demonstrate the evaluator on one frozen public skill versus the
+existing no-skill control. Use an independently authored, externally grounded
+benchmark; do not select a weak opponent or change the evaluator into a
+multi-skill comparison framework.
 
-**Objective:** Make `skill-eval-loop` a CI-gated hill climb on one locked
-non-toy skill suite: `run` consumes an accepted `calibrate` fixture hash; live
-calibration A/B-flips so `A` is not always the known-better seed; a live paired
-`calibrate` then `run` exits `0` with complete quality evidence
-(`quality_outcome` never a restored winner when a dimension is unknown or
-inconsistent). Same-provider judging stays `provisional_non_independent`. Out
-of scope: modularizing the evaluator script, installing GSD/NTT123, and any
-quality-winner claim on the toy pilot.
+**Selected target:** Vercel's `vercel-react-best-practices` skill.
 
-**Do not start by splitting `skills/skill-eval-loop/scripts/skill_eval_loop.py`.**
-The bottleneck is eval validity, not file size.
+- repository: `https://github.com/vercel-labs/agent-skills.git`
+- revision: `b8caa260a420a73042e35521de4b5c8baf6446cc`
+- subpath: `skills/react-best-practices`
+- evaluator payload SHA-256:
+  `5cbdbd8d9acc6913b8f4e0c7151830e88417872421a5975b86fa4b3eba5c36d3`
+- declared skill license: MIT
 
-**Stop and ask** if the first target skill is unnamed, if the user wants a
-second-provider judge before the CI gate, or if transcripts are still
-`human_transcript_review_required`.
+The repository does not vendor the target. An operator fetches the exact
+revision into a temporary or controlled source directory, verifies the revision,
+then passes the absolute skill subpath to the evaluator. `run.json` binds the
+actual payload hash.
 
-### Task 7: Lock a non-toy skill suite
+### Task 7: Lock a public benchmark
 
-**Description:** Replace the toy Blue prompt with one real skill directory and
-a locked JSONL suite that can fail. Do not invent the skill; ask.
+**Description:** Replace the prior skill-specific suite with response-only
+React/Next review tasks authored without inspecting the target skill. Ground
+task metadata in official React and Next.js documentation.
 
 **Acceptance criteria:**
-- [ ] Named skill path and task file are recorded here and used by later tasks.
-- [ ] Tasks are not saturated at baseline (not every row `both_pass` by design).
+- [x] The public target identity, immutable revision, subpath, license, and
+  evaluator payload hash are recorded.
+- [x] `tasks/react-best-practices-v1.jsonl` contains realistic positive,
+  negative-control, ambiguous, and false-positive-sensitive cases.
+- [x] The suite passes an evaluator dry-run against the frozen target.
 
-**Dependencies:** User names the skill. No code until that answer exists.
+The checked-in suite is a public development benchmark, not a secret promotion
+holdout. A client promotion claim still requires an independently controlled
+task file that was unavailable to the skill-authoring and hill-climbing loop.
+
+**Result:** A fresh-context author created ten response-only tasks using only
+official React and Next.js documentation. The suite includes two explicit
+negative controls. Dry-run against the exact target revision is valid with
+target hash `5cbdbd8d9acc6913b8f4e0c7151830e88417872421a5975b86fa4b3eba5c36d3`,
+task hash `621a609cfcdb82756ebe6870a0fad16c6ef12f6186f6c75abb213195b4333c92`,
+10 paired trials, 50 planned invocations, zero provider calls, and no artifacts.
 
 ### Task 8: Bind calibration into live `run`
 
@@ -384,32 +394,63 @@ drifts.
 - [x] `python3 -m unittest discover -s tests -v`
 - [x] Focused tests cover hash bind, missing calibration, and A/B flip.
 
-**Dependencies:** Task 7 for the live suite; tests can land first.
+**Dependencies:** The calibration implementation is independent of the selected
+public target.
 
 **Result:** Production calibration alternates both candidate orientations.
 Rubric runs bind a validated accepted calibration and fixture hash; missing
 calibration cannot complete quality evidence, and malformed or drifted supplied
 bindings are runner-invalid. Unit and fake-harness verification is complete;
-no external Codex run was added. The Task 8 trust root is the operator-controlled
-`calibration.json` plus its original absolute fixture path. Task 9 must keep one
-stable CI path or separately approve a portable content-addressed design.
+no external Codex run was added. The trust root is the operator-controlled
+`calibration.json` plus its original absolute fixture path.
 
-### Task 9: CI as the product UI
+### Task 9: CI protects evaluator mechanics
 
-**Description:** Add a CI job that runs unit tests and, when secrets exist, the
-locked calibrate-then-run pair. The gate is complete hash-bound quality
-evidence, not a skill-quality winner.
+**Description:** Keep CI deterministic and credential-free. CI tests evaluator
+mechanics with fake harnesses; authorized operators run live evaluations
+locally. Complete hash-bound quality evidence is a local evaluation property,
+not a CI or skill-quality claim.
 
 **Acceptance criteria:**
-- [ ] CI fails on unittest failure or runner-invalid (`exit 2`).
-- [ ] Rubric runs without bound accepted calibration cannot look like a quality
+- [x] CI fails on unittest failure or runner-invalid (`exit 2`).
+- [x] Rubric runs without bound accepted calibration cannot look like a quality
   pass.
 
 **Dependencies:** Task 8.
 
-### Task 10: Independent judge or holdout
+**Result:** Pull-request and push CI run the Python tests, healthcheck, packaging
+checks, and fake-harness coverage. CI has no live model invocation, model
+credential, calibration run, or raw evidence upload. Public benchmark and live
+calibration runs remain local, explicit operator actions. Real promotion
+evidence remains external and incomplete; no treatment winner is claimed.
 
-**Description:** Only after Tasks 8–9. A second provider or a held-out human
-set. Same-provider evidence stays provisional until then.
+### Task 10: Human-labeled holdout and judge validation
 
-**Dependencies:** Tasks 8 and 9. User approval before adding a provider.
+**Description:** Separate visible development/regression cases from promotion
+evidence. Promotion uses an independently controlled, human-labeled holdout,
+repeated trials, and measured agreement between human labels and any automated
+judge. A second provider is useful corroboration, not a substitute for the
+holdout or human agreement.
+
+**Acceptance criteria:**
+- [x] `run --promotion` requires an explicit task path, at least three trials,
+  and accepted calibration for rubric tasks.
+- [x] The public React suite is classified as development evidence; live runs
+  are local and explicitly authorized.
+- [ ] An independently controlled holdout covers positive, negative,
+  ambiguous, near-tie, and adversarial cases from the intended use
+  distribution.
+- [ ] At least two humans label the holdout; disagreements and rationales are
+  retained.
+- [ ] Automated-judge agreement with the retained human labels is measured
+  before a promotion claim.
+- [ ] A repeated-trial promotion run is transcript-reviewed and reports
+  per-dimension outcomes, regressions, variance, usage, and cost.
+
+**Result so far:** The evaluator now distinguishes `development` and
+`promotion` roles and rejects underpowered or uncalibrated rubric promotion
+runs. No holdout content was invented in this repository: independence and
+human labels remain the next evidence gate.
+
+**Dependencies:** Tasks 8 and 9. User approval before adding a provider or
+making paid calls.

@@ -13,7 +13,9 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import unicodedata
 from typing import Any
 
 
@@ -36,6 +38,10 @@ SUPPORTED_GRADERS = {
 
 def error(message: str) -> None:
     print(f"ERROR: {message}", file=sys.stderr)
+
+
+def progress(message: str) -> None:
+    print(f"PROGRESS: {message}", file=sys.stderr, flush=True)
 
 
 def absolute_path(value: str, label: str) -> Path:
@@ -136,7 +142,9 @@ def load_tasks(path: Path) -> list[dict[str, Any]]:
             if not isinstance(raw, dict):
                 raise ValueError(f"line {line_number}: task must be an object")
             task_id = required_string(raw.get("id"), f"line {line_number} field id")
-            if task_id in seen:
+            safe_task_id(task_id)
+            task_key = normalized_id(task_id)
+            if task_key in seen:
                 raise ValueError(f'task "{task_id}" field id: duplicate value')
             prompt = required_string(raw.get("prompt"), f'task "{task_id}" field prompt')
             raw_graders = raw.get("graders")
@@ -155,13 +163,14 @@ def load_tasks(path: Path) -> list[dict[str, Any]]:
             task = dict(raw)
             task.update({"id": task_id, "prompt": prompt, "graders": graders})
             tasks.append(task)
-            seen.add(task_id)
+            seen.add(task_key)
     if not tasks:
         raise ValueError("tasks: at least one task is required")
     return tasks
 
 
 REQUIRED_CALIBRATION_CASES = ("known-better", "known-worse", "tie")
+INTERVENTION = "injected_skill_instructions"
 
 
 def load_calibration(path: Path) -> dict[str, Any]:
@@ -186,7 +195,8 @@ def load_calibration(path: Path) -> dict[str, Any]:
             raise ValueError(f"{label}: must be an object")
         case_id = required_string(value.get("id"), f"{label} field id")
         safe_task_id(case_id)
-        if case_id in seen:
+        case_key = normalized_id(case_id)
+        if case_key in seen:
             raise ValueError(f"{label} field id: duplicate value {case_id!r}")
         human_winner = required_string(value.get("human_winner"), f"{label} field human_winner")
         if human_winner not in {"better", "other", "tie"}:
@@ -202,7 +212,7 @@ def load_calibration(path: Path) -> dict[str, Any]:
                 "rationale": required_string(value.get("rationale"), f"{label} field rationale"),
             }
         )
-        seen.add(case_id)
+        seen.add(case_key)
     missing = [case_id for case_id in REQUIRED_CALIBRATION_CASES if case_id not in seen]
     if missing:
         raise ValueError(
@@ -317,7 +327,7 @@ def load_calibration_binding(path: Path, runner_model: str, judge_model: str) ->
 
 
 def payload_files(root: Path) -> list[Path]:
-    excluded = {"evals", "tests", "__pycache__", ".DS_Store"}
+    excluded = {"evals", "tests", "__pycache__", ".DS_Store", ".tink-source.json"}
     files: list[Path] = []
     for path in root.rglob("*"):
         relative = path.relative_to(root)
@@ -325,7 +335,7 @@ def payload_files(root: Path) -> list[Path]:
             continue
         if path.is_symlink():
             raise ValueError(f"symlinked skill payload entry is not allowed: {path}")
-        if path.is_file() and path.suffix != ".pyc":
+        if path.is_file():
             files.append(path)
     return sorted(files)
 
@@ -370,22 +380,43 @@ def resolve_tasks_path(skill: Path, value: str | None) -> Path:
     return owned_suite
 
 
+def reject_tasks_inside_skill(skill: Path, tasks_path: Path, promotion: bool) -> None:
+    if not promotion:
+        return
+    skill_root = skill.resolve()
+    resolved_tasks = tasks_path.resolve()
+    try:
+        resolved_tasks.relative_to(skill_root)
+    except ValueError:
+        return
+    raise ValueError(
+        "promotion tasks path must be independently controlled and outside the target skill"
+    )
+
+
 def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
     if arguments.harness != "codex":
         raise ValueError("harness must be codex")
     if not arguments.model or arguments.trials < 1 or arguments.timeout_seconds < 1:
         raise ValueError("model, positive trials, and positive timeout-seconds are required")
+    if arguments.promotion and arguments.tasks is None:
+        raise ValueError("promotion runs require an explicit independently controlled tasks path")
+    if arguments.promotion and arguments.trials < 3:
+        raise ValueError("promotion runs require at least 3 trials")
     skill = absolute_path(arguments.skill, "skill")
     output = absolute_path(arguments.output, "output")
     if not (skill / "SKILL.md").is_file():
         raise ValueError("skill path must contain SKILL.md")
     tasks_path = resolve_tasks_path(skill, arguments.tasks)
+    reject_tasks_inside_skill(skill, tasks_path, arguments.promotion)
     tasks = load_tasks(tasks_path)
     rubrics = sum(
         1 for task in tasks for grader in task["graders"] if grader["type"] == "rubric"
     )
     if rubrics and not arguments.judge_model:
         raise ValueError("judge-model is required when rubric graders are present")
+    if arguments.promotion and rubrics and arguments.calibration is None:
+        raise ValueError("promotion runs with rubric graders require accepted calibration")
     calibration: dict[str, Any] | None = None
     if arguments.calibration is not None:
         try:
@@ -412,6 +443,8 @@ def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
             "harness_version": version,
             "model": arguments.model,
             "judge_model": arguments.judge_model,
+            "evaluation_role": "promotion" if arguments.promotion else "development",
+            "intervention": INTERVENTION,
             "trials": arguments.trials,
             "timeout_seconds": arguments.timeout_seconds,
             "output_dir": str(output),
@@ -446,8 +479,17 @@ def write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 def safe_task_id(task_id: str) -> None:
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", task_id):
+    if not task_id or task_id in {".", ".."} or not task_id[0].isalnum():
         raise ValueError(f'task "{task_id}" field id: must be path-safe')
+    if any(
+        not (char.isalnum() or unicodedata.category(char).startswith("M") or char in "._-")
+        for char in task_id
+    ):
+        raise ValueError(f'task "{task_id}" field id: must be path-safe')
+
+
+def normalized_id(value: str) -> str:
+    return unicodedata.normalize("NFC", value).casefold()
 
 
 def copy_skill_payload(source: Path, destination: Path) -> None:
@@ -469,10 +511,9 @@ def prepare_run_codex_home(output: Path) -> Path:
     return home
 
 
-def discard_runtime_auth(home: Path) -> None:
-    target = home / "auth.json"
-    if target.is_file():
-        target.unlink()
+def discard_runtime_home(home: Path) -> None:
+    if home.exists():
+        shutil.rmtree(home)
 
 
 def trace_value(event: Any, *keys: str) -> Any:
@@ -484,11 +525,13 @@ def trace_value(event: Any, *keys: str) -> Any:
     return current
 
 
-def parse_trace(path: Path) -> dict[str, Any]:
+def parse_trace(path: Path, skill_name: str = "") -> dict[str, Any]:
     observed: dict[str, Any] = {
         "response": "",
         "actual_model": "",
         "session_id": "",
+        "skill_accessed": False,
+        "failure_message": "",
         "input_tokens": None,
         "output_tokens": None,
         "total_tokens": None,
@@ -506,8 +549,24 @@ def parse_trace(path: Path) -> dict[str, Any]:
             elif event.get("type") == "thread.started":
                 observed["session_id"] = trace_value(event, "thread_id") or ""
             elif event.get("type") == "item.completed":
-                if trace_value(event, "item", "type") == "agent_message":
+                item_type = trace_value(event, "item", "type")
+                if item_type == "agent_message":
                     observed["response"] = str(trace_value(event, "item", "text") or "").strip()
+                elif item_type == "command_execution" and skill_name:
+                    command = str(trace_value(event, "item", "command") or "")
+                    output = str(trace_value(event, "item", "aggregated_output") or "")
+                    skill_path = f".agents/skills/{skill_name}/SKILL.md"
+                    skill_frontmatter = re.search(
+                        rf"(?m)^name:\s*{re.escape(skill_name)}\s*$", output
+                    )
+                    if (
+                        skill_path in command
+                        and (
+                            trace_value(event, "item", "exit_code") == 0
+                            or skill_frontmatter is not None
+                        )
+                    ):
+                        observed["skill_accessed"] = True
             elif event.get("type") == "turn.completed":
                 input_tokens = trace_value(event, "usage", "input_tokens")
                 output_tokens = trace_value(event, "usage", "output_tokens")
@@ -517,7 +576,25 @@ def parse_trace(path: Path) -> dict[str, Any]:
                     observed["output_tokens"] = output_tokens
                 if observed["input_tokens"] is not None and observed["output_tokens"] is not None:
                     observed["total_tokens"] = observed["input_tokens"] + observed["output_tokens"]
+            elif event.get("type") == "turn.failed":
+                observed["failure_message"] = str(trace_value(event, "error", "message") or "")
+            elif event.get("type") == "error":
+                observed["failure_message"] = str(event.get("message") or "")
     return observed
+
+
+def is_infrastructure_failure(message: str) -> bool:
+    lowered = message.casefold()
+    return any(
+        marker in lowered
+        for marker in (
+            "failed to lookup address information",
+            "error sending request",
+            "connection refused",
+            "connection reset",
+            "network is unreachable",
+        )
+    )
 
 
 def workspace_target(workspace: Path, relative: str) -> Path:
@@ -602,109 +679,244 @@ def grade(task: dict[str, Any], workspace: Path, response: str) -> dict[str, Any
     }
 
 
-def run_condition(
-    *,
-    condition: str,
-    pair_dir: Path,
-    skill: Path,
-    skill_hash: str,
-    skill_name: str,
-    codex_directory: Path,
-    configuration: dict[str, Any],
-    task: dict[str, Any],
-) -> tuple[dict[str, Any], dict[str, bool]]:
-    condition_dir = pair_dir / condition
-    workspace = condition_dir / "workspace"
-    workspace.mkdir(parents=True)
-    (condition_dir / "home").mkdir()
-    installed_skill = workspace / ".agents" / "skills" / skill_name
-    if installed_skill.exists():
-        raise ValueError(f"fixture exposes target skill in {condition}")
-    isolation = {"control_skill_absent": condition == "control", "treatment_skill_present": False, "treatment_hash_matches": False}
-    if condition == "treatment":
-        copy_skill_payload(skill, installed_skill)
-        if hash_skill(installed_skill) != skill_hash:
-            raise ValueError("installed skill hash does not match source")
-        isolation["treatment_skill_present"] = True
-        isolation["treatment_hash_matches"] = True
-    trace_path = condition_dir / "trace.jsonl"
-    stderr_path = condition_dir / "stderr.txt"
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "HOME": str(condition_dir / "home"),
-            "CODEX_HOME": str(codex_directory),
-            "SKILL_EVAL_SKILL_NAME": skill_name,
-        }
-    )
-    arguments = [
-        configuration["harness_executable"],
-        "exec",
-        "--json",
-        "--ephemeral",
-        "--skip-git-repo-check",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--sandbox",
-        "read-only",
-        "--model",
-        configuration["model"],
-        task["prompt"],
-    ]
-    started = time.monotonic()
-    timed_out = False
-    try:
-        with trace_path.open("w", encoding="utf-8") as trace, stderr_path.open("w", encoding="utf-8") as stderr:
-            completed = subprocess.run(
-                arguments,
-                cwd=workspace,
-                env=environment,
-                stdout=trace,
-                stderr=stderr,
-                timeout=configuration["timeout_seconds"],
-                check=False,
-            )
-        exit_code = completed.returncode
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        exit_code = -1
-    duration_ms = round((time.monotonic() - started) * 1000)
-    observed = parse_trace(trace_path)
-    response_path = condition_dir / "response.md"
-    response_path.write_text(observed["response"], encoding="utf-8")
-    deterministic = grade(task, workspace, observed["response"])
-    actual_model = observed["actual_model"]
-    model_matches = actual_model == configuration["model"] if actual_model else None
-    model_requirement_satisfied = bool(configuration["model"]) and (not actual_model or model_matches)
-    status = "timed_out" if timed_out else ("completed" if exit_code == 0 else "failed")
-    return (
-        {
-            "name": condition,
+class CodexRuntime:
+    """Own the shared Codex process, workspace, and evidence lifecycle."""
+
+    def __init__(self, codex_directory: Path, configuration: dict[str, Any]) -> None:
+        self.codex_directory = codex_directory
+        self.configuration = configuration
+
+    def _invoke(
+        self,
+        *,
+        invocation_dir: Path,
+        workspace: Path,
+        prompt: str,
+        role: str,
+        display_name: str,
+        skill_name: str = "",
+    ) -> dict[str, Any]:
+        target_role = role in {"control", "treatment"}
+        model = (
+            self.configuration["model"]
+            if target_role
+            else self.configuration["judge_model"]
+        )
+        invocation_dir.mkdir(parents=True)
+        (invocation_dir / "home").mkdir()
+        if not target_role:
+            (invocation_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
+        trace_path = invocation_dir / "trace.jsonl"
+        stderr_path = invocation_dir / "stderr.txt"
+        response_name = "response.md" if target_role else "response.txt"
+        response_path = invocation_dir / response_name
+        environment = os.environ.copy()
+        environment.pop("OPENAI_API_KEY", None)
+        environment.update(
+            {
+                "HOME": str(invocation_dir / "home"),
+                "CODEX_HOME": str(self.codex_directory),
+            }
+        )
+        if target_role:
+            environment["SKILL_EVAL_SKILL_NAME"] = skill_name
+        else:
+            environment["SKILL_EVAL_ROLE"] = role
+        arguments = [
+            self.configuration["harness_executable"],
+            "exec",
+            "--json",
+            "--ephemeral",
+            "--skip-git-repo-check",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--sandbox",
+            "read-only",
+            "--model",
+            model,
+            prompt,
+        ]
+        started = time.monotonic()
+        timed_out = False
+        progress(f"starting {display_name}")
+        try:
+            with trace_path.open("w", encoding="utf-8") as trace, stderr_path.open(
+                "w", encoding="utf-8"
+            ) as stderr:
+                completed = subprocess.run(
+                    arguments,
+                    cwd=workspace,
+                    env=environment,
+                    stdout=trace,
+                    stderr=stderr,
+                    timeout=self.configuration["timeout_seconds"],
+                    check=False,
+                )
+            exit_code = completed.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            exit_code = -1
+        duration_ms = round((time.monotonic() - started) * 1000)
+        observed = parse_trace(
+            trace_path,
+            skill_name if role == "treatment" else "",
+        )
+        response_path.write_text(observed["response"], encoding="utf-8")
+        reported_model = observed["actual_model"]
+        model_matches = reported_model == model if reported_model else None
+        status = "timed_out" if timed_out else ("completed" if exit_code == 0 else "failed")
+        failure_reason = (
+            "infrastructure_failed"
+            if exit_code != 0 and is_infrastructure_failure(observed["failure_message"])
+            else ""
+        )
+        progress(f"finished {display_name}: {status} in {duration_ms} ms")
+        return {
             "response": observed["response"],
-            "deterministic_status": deterministic["status"],
-            "pending_rubrics": deterministic["pending_rubrics"],
-            "graders": deterministic["results"],
+            "skill_accessed": observed["skill_accessed"],
+            "failure_reason": failure_reason,
+            "timed_out": timed_out,
             "execution": {
                 "status": status,
                 "exit_code": exit_code,
                 "duration_ms": duration_ms,
-                "requested_model": configuration["model"],
-                "trace_reported_model": actual_model,
-                "model_identity_source": "trace_reported" if actual_model else "cli_configured",
+                "requested_model": model,
+                "trace_reported_model": reported_model,
+                "model_identity_source": (
+                    "trace_reported" if reported_model else "cli_configured"
+                ),
                 "model_matches_requested": model_matches,
-                "model_requirement_satisfied": model_requirement_satisfied,
                 "input_tokens": observed["input_tokens"],
                 "output_tokens": observed["output_tokens"],
                 "total_tokens": observed["total_tokens"],
             },
-            "artifacts": {
-                "response": f"{condition}/response.md",
-                "trace": f"{condition}/trace.jsonl",
-                "stderr": f"{condition}/stderr.txt",
+            "artifact_names": {
+                **({"prompt": "prompt.txt"} if not target_role else {}),
+                "response": response_name,
+                "trace": "trace.jsonl",
+                "stderr": "stderr.txt",
             },
-        },
-        isolation,
-    )
+        }
+
+    def run_condition(
+        self,
+        *,
+        condition: str,
+        pair_dir: Path,
+        skill: Path,
+        skill_hash: str,
+        skill_name: str,
+        task: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, bool]]:
+        condition_dir = pair_dir / condition
+        with tempfile.TemporaryDirectory(prefix=f"skill-eval-{condition}-") as temporary:
+            workspace = Path(temporary)
+            installed_skill = workspace / ".agents" / "skills" / skill_name
+            if installed_skill.exists():
+                raise ValueError(f"fixture exposes target skill in {condition}")
+            isolation = {
+                "control_skill_absent": condition == "control",
+                "treatment_skill_present": False,
+                "treatment_hash_matches": False,
+            }
+            prompt = task["prompt"]
+            if condition == "treatment":
+                copy_skill_payload(skill, installed_skill)
+                if hash_skill(installed_skill) != skill_hash:
+                    raise ValueError("installed skill hash does not match source")
+                isolation["treatment_skill_present"] = True
+                isolation["treatment_hash_matches"] = True
+                skill_instructions = (installed_skill / "SKILL.md").read_text(
+                    encoding="utf-8"
+                )
+                prompt = (
+                    "Apply the following skill instructions to the task. The exact hashed "
+                    f"skill package is available at .agents/skills/{skill_name}/ for any "
+                    "referenced files.\n\n"
+                    f"<skill_instructions name=\"{skill_name}\" sha256=\"{skill_hash}\">\n"
+                    f"{skill_instructions}\n"
+                    "</skill_instructions>\n\n"
+                    f"<task>\n{task['prompt']}\n</task>"
+                )
+            invocation = self._invoke(
+                invocation_dir=condition_dir,
+                workspace=workspace,
+                prompt=prompt,
+                role=condition,
+                display_name=f"target {task['id']} {condition}",
+                skill_name=skill_name,
+            )
+            deterministic = grade(task, workspace, invocation["response"])
+        execution = dict(invocation["execution"])
+        reported_model = execution["trace_reported_model"]
+        execution["model_requirement_satisfied"] = bool(self.configuration["model"]) and (
+            not reported_model or execution["model_matches_requested"]
+        )
+        execution["failure_reason"] = invocation["failure_reason"]
+        return (
+            {
+                "name": condition,
+                "response": invocation["response"],
+                "activation": {
+                    "status": "observed" if condition == "treatment" else "unknown",
+                    "reason": (
+                        "skill_instructions_injected"
+                        if condition == "treatment"
+                        else "no_skill_in_control"
+                    ),
+                    "trace_skill_read": invocation["skill_accessed"],
+                },
+                "deterministic_status": deterministic["status"],
+                "pending_rubrics": deterministic["pending_rubrics"],
+                "graders": deterministic["results"],
+                "execution": execution,
+                "artifacts": {
+                    label: f"{condition}/{name}"
+                    for label, name in invocation["artifact_names"].items()
+                },
+            },
+            isolation,
+        )
+
+    def invoke_judge(
+        self,
+        *,
+        judge_dir: Path,
+        artifact_root: Path,
+        prompt: str,
+        role: str,
+    ) -> tuple[dict[str, Any], str]:
+        artifact_prefix = judge_dir.relative_to(artifact_root).as_posix()
+        with tempfile.TemporaryDirectory(prefix=f"skill-eval-{role}-") as temporary:
+            invocation = self._invoke(
+                invocation_dir=judge_dir,
+                workspace=Path(temporary),
+                prompt=prompt,
+                role=role,
+                display_name=f"{role} {artifact_prefix}",
+            )
+        execution = invocation["execution"]
+        result: dict[str, Any] = {
+            "status": "unknown",
+            "reason": "",
+            "dimensions": [],
+            "execution": execution,
+            "artifacts": {
+                label: f"{artifact_prefix}/{name}"
+                for label, name in invocation["artifact_names"].items()
+            },
+        }
+        if invocation["timed_out"]:
+            result["reason"] = "timed_out"
+        elif execution["exit_code"] != 0:
+            result["reason"] = (
+                "infrastructure_failed"
+                if invocation["failure_reason"] == "infrastructure_failed"
+                else "judge_failed"
+            )
+        elif execution["trace_reported_model"] and not execution["model_matches_requested"]:
+            result["reason"] = "model_identity_mismatch"
+        return result, invocation["response"]
 
 
 def deterministic_comparison(control: str, treatment: str) -> str:
@@ -729,6 +941,7 @@ def runner_is_valid(conditions: dict[str, dict[str, Any]], isolation: dict[str, 
         and isolation["control_skill_absent"]
         and isolation["treatment_skill_present"]
         and isolation["treatment_hash_matches"]
+        and treatment["activation"]["status"] == "observed"
     )
 
 
@@ -857,99 +1070,6 @@ def unknown_pairwise(reason: str, judge_model: str) -> dict[str, Any]:
     return unknown_judgment(reason, judge_model)
 
 
-def invoke_judge(
-    *,
-    judge_dir: Path,
-    codex_directory: Path,
-    configuration: dict[str, Any],
-    prompt: str,
-    role: str,
-) -> tuple[dict[str, Any], str]:
-    workspace = judge_dir / "workspace"
-    workspace.mkdir(parents=True)
-    (judge_dir / "home").mkdir()
-    (judge_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
-    trace_path = judge_dir / "trace.jsonl"
-    stderr_path = judge_dir / "stderr.txt"
-    response_path = judge_dir / "response.txt"
-    environment = os.environ.copy()
-    environment.update(
-        {
-            "HOME": str(judge_dir / "home"),
-            "CODEX_HOME": str(codex_directory),
-            "SKILL_EVAL_ROLE": role,
-        }
-    )
-    arguments = [
-        configuration["harness_executable"],
-        "exec",
-        "--json",
-        "--ephemeral",
-        "--skip-git-repo-check",
-        "--ignore-user-config",
-        "--ignore-rules",
-        "--sandbox",
-        "read-only",
-        "--model",
-        configuration["judge_model"],
-        prompt,
-    ]
-    started = time.monotonic()
-    timed_out = False
-    try:
-        with trace_path.open("w", encoding="utf-8") as trace, stderr_path.open(
-            "w", encoding="utf-8"
-        ) as stderr:
-            completed = subprocess.run(
-                arguments,
-                cwd=workspace,
-                env=environment,
-                stdout=trace,
-                stderr=stderr,
-                timeout=configuration["timeout_seconds"],
-                check=False,
-            )
-        exit_code = completed.returncode
-    except subprocess.TimeoutExpired:
-        timed_out = True
-        exit_code = -1
-    duration_ms = round((time.monotonic() - started) * 1000)
-    observed = parse_trace(trace_path)
-    response_path.write_text(observed["response"], encoding="utf-8")
-    reported_model = observed["actual_model"]
-    model_matches = reported_model == configuration["judge_model"] if reported_model else None
-    result: dict[str, Any] = {
-        "status": "unknown",
-        "reason": "",
-        "dimensions": [],
-        "execution": {
-            "status": "timed_out" if timed_out else ("completed" if exit_code == 0 else "failed"),
-            "exit_code": exit_code,
-            "duration_ms": duration_ms,
-            "requested_model": configuration["judge_model"],
-            "trace_reported_model": reported_model,
-            "model_identity_source": "trace_reported" if reported_model else "cli_configured",
-            "model_matches_requested": model_matches,
-            "input_tokens": observed["input_tokens"],
-            "output_tokens": observed["output_tokens"],
-            "total_tokens": observed["total_tokens"],
-        },
-        "artifacts": {
-            "prompt": f"{judge_dir.name}/prompt.txt",
-            "response": f"{judge_dir.name}/response.txt",
-            "trace": f"{judge_dir.name}/trace.jsonl",
-            "stderr": f"{judge_dir.name}/stderr.txt",
-        },
-    }
-    if timed_out:
-        result["reason"] = "timed_out"
-    elif exit_code != 0:
-        result["reason"] = "judge_failed"
-    elif reported_model and not model_matches:
-        result["reason"] = "model_identity_mismatch"
-    return result, observed["response"]
-
-
 def mark_provisional(result: dict[str, Any]) -> dict[str, Any]:
     result["status"] = "provisional_non_independent"
     result["reason"] = "same_provider_family"
@@ -958,18 +1078,17 @@ def mark_provisional(result: dict[str, Any]) -> dict[str, Any]:
 
 def run_rubric_judge(
     *,
+    runtime: CodexRuntime,
+    pair_dir: Path,
     condition_dir: Path,
-    codex_directory: Path,
-    configuration: dict[str, Any],
     task: dict[str, Any],
     response: str,
     rubric: dict[str, Any],
     rubric_index: int,
 ) -> dict[str, Any]:
-    result, raw = invoke_judge(
+    result, raw = runtime.invoke_judge(
         judge_dir=condition_dir / f"judge-{rubric_index:03d}",
-        codex_directory=codex_directory,
-        configuration=configuration,
+        artifact_root=pair_dir,
         prompt=judge_prompt(task, response, rubric),
         role="judge",
     )
@@ -985,9 +1104,8 @@ def run_rubric_judge(
 
 def run_pairwise_judge(
     *,
+    runtime: CodexRuntime,
     pair_dir: Path,
-    codex_directory: Path,
-    configuration: dict[str, Any],
     task: dict[str, Any],
     conditions: dict[str, dict[str, Any]],
     rubric: dict[str, Any],
@@ -998,10 +1116,9 @@ def run_pairwise_judge(
     candidates = {
         label: conditions[condition]["response"] for label, condition in mapping.items()
     }
-    result, raw = invoke_judge(
+    result, raw = runtime.invoke_judge(
         judge_dir=pair_dir / f"pairwise-{rubric_index:03d}",
-        codex_directory=codex_directory,
-        configuration=configuration,
+        artifact_root=pair_dir,
         prompt=pairwise_prompt(task, candidates, rubric),
         role="pairwise",
     )
@@ -1021,8 +1138,8 @@ def run_pairwise_judge(
 
 def judge_conditions(
     *,
+    runtime: CodexRuntime,
     pair_dir: Path,
-    codex_directory: Path,
     configuration: dict[str, Any],
     task: dict[str, Any],
     conditions: dict[str, dict[str, Any]],
@@ -1048,9 +1165,9 @@ def judge_conditions(
     for condition_name, condition in conditions.items():
         condition["rubric_judgments"] = [
             run_rubric_judge(
+                runtime=runtime,
+                pair_dir=pair_dir,
                 condition_dir=pair_dir / condition_name,
-                codex_directory=codex_directory,
-                configuration=configuration,
                 task=task,
                 response=condition["response"],
                 rubric=rubric,
@@ -1062,9 +1179,8 @@ def judge_conditions(
         return [unknown_pairwise("per_output_unknown", configuration["judge_model"]) for _ in rubrics]
     return [
         run_pairwise_judge(
+            runtime=runtime,
             pair_dir=pair_dir,
-            codex_directory=codex_directory,
-            configuration=configuration,
             task=task,
             conditions=conditions,
             rubric=rubric,
@@ -1081,6 +1197,39 @@ def all_rubric_judgments(conditions: dict[str, dict[str, Any]]) -> list[dict[str
         for condition in conditions.values()
         for judgment in condition.get("rubric_judgments", [])
     ]
+
+
+def pair_executions(
+    conditions: dict[str, dict[str, Any]], pairwise: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    executions = [condition["execution"] for condition in conditions.values()]
+    executions.extend(judgment["execution"] for judgment in all_rubric_judgments(conditions))
+    executions.extend(judgment["execution"] for judgment in pairwise)
+    return executions
+
+
+def summarize_usage(executions: list[dict[str, Any]]) -> dict[str, Any]:
+    invoked = [execution for execution in executions if execution.get("status") != "not_run"]
+    measured = [execution for execution in invoked if isinstance(execution.get("total_tokens"), int)]
+    return {
+        "status": (
+            "complete"
+            if invoked and len(measured) == len(invoked)
+            else "partial" if measured else "unknown"
+        ),
+        "invocations": len(invoked),
+        "measured_invocations": len(measured),
+        "duration_ms": sum(
+            execution.get("duration_ms", 0)
+            for execution in invoked
+            if isinstance(execution.get("duration_ms"), int)
+        ),
+        "input_tokens": sum(execution.get("input_tokens", 0) for execution in measured),
+        "output_tokens": sum(execution.get("output_tokens", 0) for execution in measured),
+        "total_tokens": sum(execution["total_tokens"] for execution in measured),
+        "cost": None,
+        "cost_status": "unknown",
+    }
 
 
 def evidence_status(judgments: list[dict[str, Any]]) -> str:
@@ -1179,7 +1328,8 @@ def quality_outcome_for(pairwise: list[dict[str, Any]], quality_status: str) -> 
             inconsistent = True
         overall = overall or winner
         for dimension in judgment["dimensions"]:
-            if restored_condition(judgment, dimension["winner"]) != winner:
+            dimension_winner = restored_condition(judgment, dimension["winner"])
+            if winner != "tie" and dimension_winner not in {"tie", winner}:
                 inconsistent = True
     if inconsistent:
         return "inconsistent"
@@ -1238,10 +1388,11 @@ def write_pair_report(
     dimensions = dimension_results(conditions, pairwise)
     report = {
         "runner_valid": runner_valid,
+        "intervention": INTERVENTION,
         "task": {"id": task["id"], "prompt": task["prompt"], "graders": task["graders"]},
         "trial": trial,
         "execution_order": execution_order,
-        "activation": {"status": "unknown", "reason": "telemetry_unavailable"},
+        "activation": conditions["treatment"]["activation"],
         "deterministic_comparison": deterministic_comparison(
             control["deterministic_status"], treatment["deterministic_status"]
         ),
@@ -1253,6 +1404,7 @@ def write_pair_report(
         "calibration_status": calibration_status,
         "fixtures_sha256": fixtures_sha256,
         "dimension_results": dimensions,
+        "usage": summarize_usage(pair_executions(conditions, pairwise)),
         "pairwise": pairwise,
         "skill": {"name": skill_name, "sha256": skill_hash},
         "isolation": {
@@ -1273,12 +1425,23 @@ def write_pair_report(
         if dimensions
         else ["- Semantic quality was not judged."]
     )
+    artifact_links: list[str] = []
+    for condition in (control, treatment):
+        for label, relative in condition["artifacts"].items():
+            artifact_links.append(f"- [{condition['name']} {label}]({relative})")
+        for judgment in condition.get("rubric_judgments", []):
+            for label, relative in judgment.get("artifacts", {}).items():
+                artifact_links.append(f"- [{condition['name']} judge {label}]({relative})")
+    for index, judgment in enumerate(pairwise, start=1):
+        for label, relative in judgment.get("artifacts", {}).items():
+            artifact_links.append(f"- [pairwise {index} {label}]({relative})")
     markdown_path.write_text(
         "\n".join(
             [
                 f"# {task['id']} trial {trial}",
                 "",
                 f"Runner valid: {runner_valid}",
+                f"Intervention: {INTERVENTION}",
                 f"Activation: {report['activation']['status']} ({report['activation']['reason']})",
                 f"Deterministic comparison: {report['deterministic_comparison']}",
                 f"Rubric status: {report['rubric_status']}",
@@ -1290,6 +1453,9 @@ def write_pair_report(
                 "",
                 "Dimensions:",
                 *dimension_lines,
+                "",
+                "Artifacts (relative to this report):",
+                *artifact_links,
                 "",
                 "Inspect the JSON report and condition artifacts for authoritative evidence.",
                 "",
@@ -1306,8 +1472,6 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
     tasks_path = Path(configuration["tasks_path"])
     output = Path(configuration["output_dir"])
     tasks = load_tasks(tasks_path)
-    for task in tasks:
-        safe_task_id(task["id"])
     if hash_file(tasks_path) != configuration["tasks_sha256"]:
         raise ValueError("tasks changed after dry-run planning")
     if hash_skill(skill) != configuration["skill_sha256"]:
@@ -1327,8 +1491,10 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"output directory already exists: {output}")
     skill_name = skill.name
     output.mkdir(parents=True)
-    codex_directory = prepare_run_codex_home(output)
+    codex_directory = output / "codex-home"
     try:
+        codex_directory = prepare_run_codex_home(output)
+        runtime = CodexRuntime(codex_directory, configuration)
         write_json(
             output / "config.json",
             {"mode": "live", "configuration": configuration, "counts": plan["counts"]},
@@ -1340,13 +1506,14 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
             "output_dir": str(output),
             "configuration": configuration,
             "counts": plan["counts"],
-            "activation": {"status": "unknown", "reason": "telemetry_unavailable"},
+            "activation": {"status": "unknown", "reason": "pending"},
             "calibration_status": calibration_status,
             "fixtures_sha256": fixtures_sha256,
             "quality_status": "not_required",
             "pairs": [],
         }
         quality_statuses: list[str] = []
+        executions: list[dict[str, Any]] = []
         for task in tasks:
             for trial in range(1, configuration["trials"] + 1):
                 pair_dir = output / f"task-{task['id']}" / f"trial-{trial:03d}"
@@ -1355,28 +1522,43 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
                 conditions: dict[str, dict[str, Any]] = {}
                 isolation = {"control_skill_absent": False, "treatment_skill_present": False, "treatment_hash_matches": False}
                 for condition in execution_order:
-                    condition_result, current_isolation = run_condition(
+                    condition_result, current_isolation = runtime.run_condition(
                         condition=condition,
                         pair_dir=pair_dir,
                         skill=skill,
                         skill_hash=configuration["skill_sha256"],
                         skill_name=skill_name,
-                        codex_directory=codex_directory,
-                        configuration=configuration,
                         task=task,
                     )
                     conditions[condition] = condition_result
+                    executions.append(condition_result["execution"])
                     for key, value in current_isolation.items():
                         isolation[key] = isolation[key] or value
+                    if condition_result["execution"]["failure_reason"] == "infrastructure_failed":
+                        result["valid"] = False
+                        result["quality_status"] = "unknown"
+                        result["failure"] = {
+                            "reason": "infrastructure_failed",
+                            "task_id": task["id"],
+                            "trial": trial,
+                            "condition": condition,
+                        }
+                        result["usage"] = summarize_usage(executions)
+                        write_json(output / "run.json", result)
+                        return result
                 pairwise = judge_conditions(
+                    runtime=runtime,
                     pair_dir=pair_dir,
-                    codex_directory=codex_directory,
                     configuration=configuration,
                     task=task,
                     conditions=conditions,
                     isolation=isolation,
                     trial=trial,
                 )
+                executions.extend(
+                    judgment["execution"] for judgment in all_rubric_judgments(conditions)
+                )
+                executions.extend(judgment["execution"] for judgment in pairwise)
                 report, report_path, markdown_path = write_pair_report(
                     pair_dir,
                     task,
@@ -1400,16 +1582,36 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
                         "runner_valid": report["runner_valid"],
                         "quality_status": report["quality_status"],
                         "quality_outcome": report["quality_outcome"],
+                        "activation": report["activation"],
                         "execution_order": execution_order,
                         "report_json": str(report_path.relative_to(output).as_posix()),
                         "report_markdown": str(markdown_path.relative_to(output).as_posix()),
                     }
                 )
         result["quality_status"] = rollup_quality_status(quality_statuses)
+        result["usage"] = summarize_usage(executions)
+        observed_activations = sum(
+            pair["activation"]["status"] == "observed" for pair in result["pairs"]
+        )
+        if observed_activations == len(result["pairs"]):
+            result["activation"] = {
+                "status": "observed",
+                "reason": "all_treatments_received_skill_instructions",
+            }
+        elif observed_activations:
+            result["activation"] = {
+                "status": "partial",
+                "reason": "some_treatments_received_skill_instructions",
+            }
+        else:
+            result["activation"] = {
+                "status": "unknown",
+                "reason": "no_treatment_skill_instructions_delivered",
+            }
         write_json(output / "run.json", result)
         return result
     finally:
-        discard_runtime_auth(codex_directory)
+        discard_runtime_home(codex_directory)
 
 
 def build_calibration_plan(arguments: argparse.Namespace) -> dict[str, Any]:
@@ -1459,19 +1661,17 @@ def build_calibration_plan(arguments: argparse.Namespace) -> dict[str, Any]:
 
 def run_calibration_case(
     *,
+    runtime: CodexRuntime,
     output: Path,
-    codex_directory: Path,
-    configuration: dict[str, Any],
     suite: dict[str, Any],
     case: dict[str, Any],
     seed: int,
 ) -> dict[str, Any]:
     mapping = calibration_mapping(seed)
     candidates = {label: case[slot] for label, slot in mapping.items()}
-    result, raw = invoke_judge(
+    result, raw = runtime.invoke_judge(
         judge_dir=output / case["id"],
-        codex_directory=codex_directory,
-        configuration=configuration,
+        artifact_root=output,
         prompt=pairwise_prompt(
             {"prompt": suite["prompt"]},
             candidates,
@@ -1510,8 +1710,10 @@ def run_calibrate(plan: dict[str, Any]) -> dict[str, Any]:
     if output.exists():
         raise ValueError(f"output directory already exists: {output}")
     output.mkdir(parents=True)
-    codex_directory = prepare_run_codex_home(output)
+    codex_directory = output / "codex-home"
     try:
+        codex_directory = prepare_run_codex_home(output)
+        runtime = CodexRuntime(codex_directory, configuration)
         write_json(
             output / "config.json",
             {"mode": "calibrate", "configuration": configuration, "counts": plan["counts"]},
@@ -1529,9 +1731,8 @@ def run_calibrate(plan: dict[str, Any]) -> dict[str, Any]:
         }
         for index, case in enumerate(suite["cases"], start=1):
             judged = run_calibration_case(
+                runtime=runtime,
                 output=output,
-                codex_directory=codex_directory,
-                configuration=configuration,
                 suite=suite,
                 case=case,
                 seed=index,
@@ -1539,6 +1740,8 @@ def run_calibrate(plan: dict[str, Any]) -> dict[str, Any]:
             result["cases"].append(judged)
             if judged["status"] == "unknown":
                 result["valid"] = False
+                if judged["reason"] == "infrastructure_failed":
+                    break
                 continue
             if judged["agrees"]:
                 result["agreements"] += 1
@@ -1554,10 +1757,11 @@ def run_calibrate(plan: dict[str, Any]) -> dict[str, Any]:
         result["accepted"] = (
             result["valid"] and result["agreements"] >= suite["minimum_agreements"]
         )
+        result["usage"] = summarize_usage([case["execution"] for case in result["cases"]])
         write_json(output / "calibration.json", result)
         return result
     finally:
-        discard_runtime_auth(codex_directory)
+        discard_runtime_home(codex_directory)
 
 
 def calibration_exit_code(result: dict[str, Any]) -> int:
@@ -1620,6 +1824,11 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--timeout-seconds", type=int, default=120)
     run_parser.add_argument("--judge-model", default="")
     run_parser.add_argument("--calibration")
+    run_parser.add_argument(
+        "--promotion",
+        action="store_true",
+        help="require an explicit task set, accepted rubric calibration, and at least 3 trials",
+    )
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.set_defaults(handler=run)
     calibrate_parser = commands.add_parser(
