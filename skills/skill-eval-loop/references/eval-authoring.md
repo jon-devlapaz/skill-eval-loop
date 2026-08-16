@@ -30,4 +30,19 @@ payload fixed after this point. Run the evaluator's dry-run to validate the
 JSONL before authorizing live calls.
 
 This boundary prevents conversational leakage, not filesystem access. Treat the
-post-authoring diff audit as required evidence.
+post-authoring diff audit as required evidence. The resulting visible suite is
+a development-suite bootstrap, not a promotion holdout.
+
+For an externally grounded public benchmark, keep the task file outside the
+target and pass it with `--tasks`. The author receives the task contract and
+allowed authoritative sources, but must not inspect the target skill, candidate
+outputs, or prior reports. Record source URLs as inert task metadata. Once the
+benchmark is checked in or used for optimization, classify it as development
+evidence even if its initial authoring was independent.
+
+Promotion tasks must be controlled independently of the skill author and the
+hill-climbing loop. Keep them outside the target skill, provide them through an
+explicit `--tasks` path, attach human labels and rationales under operator
+custody, and use `run --promotion`. Do not inspect or revise the holdout in
+response to model outputs. If the tasks become visible during optimization,
+reclassify them as development evidence and replace the holdout.

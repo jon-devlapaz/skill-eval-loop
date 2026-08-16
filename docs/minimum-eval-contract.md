@@ -48,7 +48,7 @@ Each non-empty JSONL line is one task:
 
 Required fields are:
 
-- `id`: a unique, non-empty string;
+- `id`: a unique, non-empty, path-safe string;
 - `prompt`: a non-empty string;
 - `graders`: a non-empty list of supported graders.
 
@@ -92,29 +92,57 @@ This is a suite-bootstrap mechanism, not proof that tasks represent real use.
 Use independently sourced task data, blinded judging, and human calibration for
 skill-quality claims.
 
+## Development versus promotion
+
+Repository pull-request and push CI verifies evaluator mechanics with
+deterministic tests and fake harnesses only. It makes no live model calls,
+receives no model credentials, and publishes no raw evaluation evidence.
+Authorized operators run live development and promotion evaluations locally.
+Humans inspect the retained evidence and own the promotion decision.
+
+The default `run` role is `development`. Development suites may be visible to
+the skill author and optimization loop. They are useful for debugging and
+regression detection, but repeated hill-climbing turns them into training data.
+
+`run --promotion` is a stricter execution guardrail. It requires:
+
+- an explicit `--tasks` path controlled outside the target skill;
+- at least three trials;
+- accepted calibration when the task set contains a rubric.
+
+The retained configuration records `evaluation_role` as `development` or
+`promotion`. The flag cannot prove that a task set was independently authored,
+kept hidden, representative of real use, or labeled by humans. Those remain
+operator evidence requirements. A second model or provider does not replace a
+human-labeled holdout.
+
 ## Paired execution
 
 Every task trial runs twice:
 
-- `control`: the target skill is unavailable;
-- `treatment`: the exact hashed skill payload is available.
+- `control`: the target skill is unavailable and Codex receives the original
+  task prompt;
+- `treatment`: the exact hashed skill payload is available and the evaluator
+  injects its exact `SKILL.md` text before the original task prompt.
 
-Prompt, harness, model, timeout, fixture, and tool posture remain fixed. Runs
-are sequential. Condition order alternates by trial to reduce a fixed-order
-confound. Trials never retry silently.
+The original task, harness, model, timeout, fixture, and tool posture remain
+fixed. The instruction injection is part of the treatment. Runs are sequential.
+Condition order alternates by trial to reduce a fixed-order confound. Trials
+never retry silently. The CLI emits invocation progress to stderr and stops
+before repeating a detected network or transport failure.
 
-Each condition starts in an empty read-only workspace. The minimum runner does
-not seed a repository or fixture tree. Consequently, repository-editing tasks
+Each condition starts in an empty OS-temporary read-only workspace outside the
+evaluator repository, preventing ancestor project instructions from entering
+the trial. The minimum runner does not seed a repository or fixture tree. Consequently, repository-editing tasks
 and claims about executed project tests are not reproducible under this
 contract; use self-contained response tasks until a separately justified
 workspace-fixture capability exists.
 
-The intervention is availability of the exact hashed skill payload, not a
-required execution path. Trace evidence about skill access is diagnostic when
-available. Its absence does not invalidate the paired outcome comparison and
-must not be scored as output quality. Results may claim only that access to the
-skill changed measured outcomes under the retained configuration, not that the
-model definitely read or followed the skill.
+The intervention is evaluator-owned injection of the exact hashed skill's main
+instructions. This guarantees treatment exposure without depending on the
+model to discover or open `SKILL.md`; the installed payload remains available
+for referenced files. Delivery does not prove faithful compliance, so human
+transcript review remains required.
 
 The first Codex implementation is deliberately direct. A shared harness
 abstraction is not justified until a second real harness demonstrates common
@@ -122,21 +150,28 @@ behavior.
 
 ## Codex home isolation
 
-The experiment Codex home is not the user's `~/.codex`. A live run creates
+The experiment Codex home is not the user's `~/.codex`. A live run temporarily creates
 `$output/codex-home` and sets `CODEX_HOME` to that directory for control,
 treatment, and judge. Place it under the output directory, not the OS temp
 directory: some Codex builds refuse a temp-dir home.
 
 If `~/.codex/auth.json` exists, copy only that file into the run-local home.
 Do not copy skills, sessions, or `config.toml`. Copied credentials are
-runtime-only. They are not retained evidence and must not appear in reports.
-Dry-run and fake-harness runs must not require an authenticated host Codex
-home.
+runtime-only and the runner removes the entire run-local home when it exits. The runner
+does not intentionally serialize credentials into evidence. Because the
+configured executable can read the copied file, the local operator must trust
+the harness and inspect raw artifacts before sharing them. Dry-run and
+fake-harness runs must not require an authenticated host Codex home.
 
 The treatment skill remains a workspace payload at `.agents/skills/<name>`.
 Host `CODEX_HOME/skills` is not the intervention and is not consulted. A
 same-name skill in the user's Codex home is not a runner gate once the
 experiment uses a run-local home.
+
+This isolation protects the experiment from ambient Codex configuration; it is
+not a security sandbox for hostile executables. Strong isolation of untrusted
+harnesses requires a separate OS or broker boundary and is outside this
+project.
 
 ## Dry-run accounting
 
@@ -186,7 +221,9 @@ Rubric judging begins only after both condition runs satisfy runner isolation
 and execution checks and every deterministic grader passes. A failed gate
 produces quality status `unknown` and makes no judge call.
 
-Each qualifying condition is judged separately in a fresh read-only workspace.
+Each qualifying condition is judged separately in a fresh OS-temporary read-only
+workspace outside the evaluator repository. Target, judge, and calibration
+roles share the same workspace, environment, process, trace, and cleanup lifecycle.
 The prompt presents the task, untrusted candidate response, and locked rubric,
 but no control or treatment label. For every dimension, the judge must return
 concrete response evidence and exactly one declared level. The runner retains
@@ -237,11 +274,14 @@ content is unchanged.
 
 ## Reports and exit status
 
-Pair reports separate runner validity, activation, deterministic comparison,
+Pair reports separate runner validity, evaluator-recorded activation, deterministic comparison,
 per-output rubric status, pairwise status, quality completeness, quality
 outcome, and calibration. `run.json` repeats the rolled-up runner validity and
-quality status. Activation is `unknown` with reason `telemetry_unavailable`
-until a later telemetry source exists. Calibration is `accepted` only when a
+quality status and rolled-up timing/token usage. Activation is `observed` when
+the evaluator injects the hashed treatment instructions. `trace_skill_read`
+separately records whether Codex opened the installed main file; it is telemetry,
+not a validity gate.
+Calibration is `accepted` only when a
 validated binding is supplied. Without `--calibration`, a rubric run records
 `not_run`, quality remains `unknown`, and the runner cannot exit `0`.
 
@@ -249,8 +289,9 @@ validated binding is supplied. Without `--calibration`, a rubric run records
 any required judgment is unknown, and `provisional_non_independent` when every
 required judgment succeeded. `quality_outcome` lists every dimension through
 `dimension_results` and is never a restored winner when a pairwise dimension
-disagrees with the overall winner (`inconsistent`) or when quality is unknown
-or not judged. Deterministic-only Markdown reports state that semantic quality
+favors the condition opposing the overall winner (`inconsistent`) or when
+quality is unknown or not judged. A tied dimension is compatible with an
+otherwise coherent winner. Deterministic-only Markdown reports state that semantic quality
 was not judged.
 
 Process exit status distinguishes those cases:
@@ -274,6 +315,15 @@ A **skill-quality claim** requires more: realistic tasks from the intended use
 distribution, repeated trials, fair graders, and human review of transcripts.
 Improvement, regression, and no difference are all legitimate outcomes of a
 valid run.
+
+A promotion claim additionally requires an independently controlled holdout,
+human labels for the rubric or preference decisions, and measured agreement
+between those labels and any automated judge. A visible development suite must
+not be relabeled as a holdout after it has guided changes.
+
+The remaining real-promotion gate is external to this runner: independently
+control the holdout, obtain human labels, repeat trials, and review the retained
+transcripts before making a promotion claim.
 
 A one-task pilot can establish runner acceptance. It cannot establish that a
 skill is generally effective. Capability suites should contain enough

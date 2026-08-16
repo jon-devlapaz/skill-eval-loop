@@ -40,8 +40,10 @@ requirements. Use `file_exists` and `json_equal` only when the configured
 harness can create the stated workspace artifact. Keep unknown task metadata
 for human review; it does not affect execution.
 
-The current runner starts each condition in an empty read-only workspace. Use
-response-only tasks unless the prompt itself contains all required material.
+The current runner starts each target, judge, and calibration invocation in an
+empty OS-temporary read-only workspace outside the evaluator repository. Those
+roles share one process and cleanup lifecycle. Use response-only tasks unless
+the prompt itself contains all required material.
 Do not use repository-editing or test-running tasks as quality evidence: there
 is no seeded repository for the agent to change or verify.
 
@@ -98,6 +100,35 @@ OpenAI model is explicitly same-provider evidence, not an independent judgment.
 A recommended OpenAI-only pair is `--model gpt-5.6-terra --judge-model
 gpt-5.6-sol`.
 
+The default evaluation role is `development`. Treat any suite visible to the
+skill author or repeatedly used during hill-climbing as development or
+regression evidence, even when it is locked and hash-bound.
+
+For a promotion run, use an independently controlled task file, accepted
+calibration, and repeated trials:
+
+```bash
+"$EVALUATOR" run \
+  --skill /absolute/path/to/target-skill \
+  --tasks /absolute/path/to/operator-controlled-holdout.jsonl \
+  --output /absolute/path/to/fresh-promotion-run \
+  --harness codex \
+  --harness-bin /absolute/path/to/codex \
+  --model exact-model-id \
+  --judge-model exact-judge-model-id \
+  --calibration /absolute/path/to/fresh-calibration/calibration.json \
+  --trials 3 \
+  --timeout-seconds 300 \
+  --promotion \
+  --dry-run
+```
+
+`--promotion` rejects target-owned tasks, fewer than three trials, and rubric
+runs without accepted calibration. It records the promotion role; it does not
+prove task independence, representativeness, human labeling, or judge
+agreement. Retain that evidence separately and keep the holdout unavailable to
+the hill-climbing agent.
+
 ## Calibrate the pairwise judge
 
 Score the judge against versioned human-labeled cases before a live quality
@@ -123,8 +154,8 @@ calibration without both orientations cannot bind a rubric run. Disagreements
 keep the human rationale. Exit `0` if accepted, `1` if the runner is valid but
 below threshold, and `2` if a judgment is invalid.
 
-For Task 8, the operator-controlled `calibration.json` and its original
-absolute fixture path are the binding trust root. The runner validates their
+The operator-controlled `calibration.json` and its original absolute fixture
+path are the binding trust root. The runner validates their
 internal consistency, models, labels, agreement threshold, assignment
 orientations, and fixture hash. It does not authenticate the origin of the raw
 judge artifacts. Keep the calibration directory and fixture under controlled
@@ -138,11 +169,14 @@ pilot until calibration is accepted and a human reviews disagreements.
 
 Run the identical command without `--dry-run`. The runner:
 
-- uses a no-skill control and an exact-hash treatment;
+- gives the control the original task and injects the exact-hash treatment's
+  `SKILL.md` instructions before that task;
 - runs sequentially, alternating control-first and treatment-first by trial;
+- emits invocation progress to stderr and stops after a detected infrastructure failure;
 - invokes Codex in read-only mode;
 - retains response, trace, stderr, execution metadata, and reports;
-- runs deterministic gates before any rubric judge;
+- records treatment instruction delivery and requires deterministic gates before
+  any rubric judge;
 - asks the judge for concrete evidence and one locked level per dimension;
 - never retries silently.
 
@@ -163,10 +197,13 @@ quality evidence, not runner validity.
 `quality_status` is evidence completeness. `quality_outcome` is `not_judged`
 when there is no rubric, `unknown` when any required judgment is unknown,
 `tie` when the restored winner is a tie, `inconsistent` when a pairwise
-dimension disagrees with the overall winner, or the restored winner condition.
+dimension favors the condition opposing the overall winner, or the restored
+winner condition. A tied dimension does not contradict an overall winner.
 An overall winner is never a quality pass when a dimension is unknown or
-disagrees. Activation is reported as unknown because Codex telemetry is not
-scored. A bound accepted calibration records `calibration_status: accepted`
+disagrees. Evaluator-owned treatment injection is `observed`; optional trace
+telemetry records whether Codex also opened the installed `SKILL.md`. Delivery
+proves exposure, not faithful compliance.
+A bound accepted calibration records `calibration_status: accepted`
 and `fixtures_sha256` in `run.json` and every pair report. Without a binding,
 calibration remains `not_run` and rubric quality remains `unknown`.
 
@@ -183,15 +220,17 @@ contains the source hash, and any trace-reported model identity agrees with the
 requested model.
 
 A live run creates `$output/codex-home` and points Codex at that directory.
-If `~/.codex/auth.json` exists, it is copied there for the process and removed
-afterward. Do not treat that file as retained evidence. Host Codex skills are
-not part of the intervention.
+If `~/.codex/auth.json` exists, it is copied there for the process. The entire
+run-local Codex home is removed afterward; it is not retained evidence. Use only a trusted
+harness: it can read the run-local credential file, and this evaluator is not
+a sandbox for hostile executables. Keep raw runs local and inspect them before
+sharing. Host Codex skills are not part of the intervention.
 
-Treat access to the exact hashed payload as the intervention. A trace may help
-explain how Codex used that access, but missing activation telemetry does not
-invalidate the outcome comparison or become a quality score. Phrase the result
-as the measured effect of skill access under the recorded configuration; do not
-claim that Codex definitely read or followed the skill.
+Treat injection of the exact hashed payload's `SKILL.md` instructions as the
+intervention. The control receives the original task; the treatment receives
+those instructions before that task and can access the installed payload for
+references. Injection proves exposure, not faithful compliance, so inspect the
+response before making a quality claim.
 
 Do not claim broad skill quality from one pilot or from same-provider judging.
 Use realistic unsaturated tasks, repeated trials, deterministic outcomes,

@@ -1,9 +1,10 @@
 # skill-eval-loop
 
 `skill-eval-loop` is a self-contained Python 3 Agent Skill that measures
-whether access to one local skill changes task outcomes. It runs the same task
-under a no-skill control and an exact-hash treatment, then retains the raw
-evidence and a comparison report.
+whether explicitly applying one local skill changes task outcomes. The control
+receives the original task. The treatment receives the exact hashed skill's
+`SKILL.md` instructions in its prompt, with the installed payload available for
+referenced files. The runner retains the raw evidence and a comparison report.
 
 ## Install
 
@@ -49,30 +50,59 @@ Run a side-effect-free plan before a live invocation:
 Verify the printed hashes and invocation counts, obtain authorization for the
 live calls, then run the same command without `--dry-run`.
 
-For rubric tasks, also pass `--judge-model` with a different exact model
-identifier. The runner judges each condition only after deterministic gates
-pass. A valid same-provider judgment is `provisional_non_independent`; a
-timeout, failed gate, malformed response, or identity mismatch is `unknown`.
-A missing trace-reported model is unattested, not a quality unknown.
+### Public reference benchmark
 
-The runner invokes Codex sequentially in read-only mode. Odd trials run
-control first; even trials run treatment first. It retains `run.json`, the
+The checked-in development benchmark evaluates Vercel's
+`vercel-react-best-practices` skill against the no-skill control:
+
+- repository: `https://github.com/vercel-labs/agent-skills.git`
+- revision: `b8caa260a420a73042e35521de4b5c8baf6446cc`
+- skill path: `skills/react-best-practices`
+- tasks: `tasks/react-best-practices-v1.jsonl`
+- expected evaluator payload SHA-256:
+  `5cbdbd8d9acc6913b8f4e0c7151830e88417872421a5975b86fa4b3eba5c36d3`
+- expected task SHA-256:
+  `621a609cfcdb82756ebe6870a0fad16c6ef12f6186f6c75abb213195b4333c92`
+
+Fetch that exact revision into a controlled local directory and pass the
+absolute skill subpath plus the checked-in task file to `run --dry-run`. Reject
+the plan if the revision or payload hash differs. The public task file is
+development evidence, not a secret client holdout.
+
+For rubric tasks, also pass `--judge-model` with a different exact model
+identifier and `--calibration /absolute/path/to/calibration.json` from an
+accepted calibrate run. The runner judges each condition only after
+deterministic gates pass. A valid same-provider judgment is
+`provisional_non_independent`; a timeout, failed gate, malformed response, or
+identity mismatch is `unknown`. A missing trace-reported model is unattested,
+not a quality unknown. Omitting `--calibration` is allowed, but a rubric run
+then remains quality-incomplete and cannot exit `0`.
+
+The runner invokes Codex sequentially in read-only mode, emitting invocation
+progress to stderr. Odd trials run control first; even trials run treatment
+first. The evaluator injects the exact `SKILL.md` text itself, so treatment
+exposure does not depend on model-side discovery. Target, judge, and calibration
+invocations share one lifecycle that uses cleaned OS-temporary workspaces outside
+the evaluator repository. It retains `run.json`, the
 planned configuration, tasks, condition responses, traces, stderr, and a
 JSON/Markdown report for every pair.
 
-`runner_valid` means the runner held its declared variables and isolation
-checks. It is not a general quality claim. Read both transcripts before
+`runner_valid` means the runner held its declared variables, isolation checks,
+and treatment activation. It is not a general quality claim. Read both transcripts before
 interpreting `treatment_only`, `both_pass`, `control_only`, or `both_fail`.
 
-JSON and Markdown reports also expose activation (currently unknown),
-calibration (`not_run`), every judged dimension, `quality_status`, and
+JSON and Markdown reports expose evaluator-recorded instruction delivery plus
+optional trace telemetry when Codex also reads the installed skill, rolled-up timing and token usage,
+calibration (`not_run`, or `accepted` plus `fixtures_sha256` when a bound
+calibration is supplied), every judged dimension, `quality_status`, and
 `quality_outcome`. Deterministic-only reports say semantic quality was not
 judged. An overall pairwise winner is not a quality pass when any dimension is
-unknown or disagrees with that winner.
+unknown or favors the opposing condition. A tied dimension is compatible with
+an otherwise coherent winner.
 
-Live exit status is `0` when quality evidence is complete, `1` when the runner
-is valid but quality is unknown or was not judged, and `2` when the runner is
-invalid.
+Live exit status is `0` when quality evidence is complete, which for rubric
+runs requires a bound accepted calibration, `1` when the runner is valid but
+quality is unknown or was not judged, and `2` when the runner is invalid.
 
 Calibrate the pairwise judge against versioned human-labeled
 `known-better`, `known-worse`, and `tie` cases before a live quality pilot:
@@ -98,7 +128,17 @@ same-provider rubric judge, blinded pairwise comparison, and human-labeled
 calibration fixtures. It does not provide independent judging, pricing,
 parallel execution, provider discovery, or adapters for other harnesses.
 
+Live evaluation is a trusted local-operator workflow. The configured harness
+and Codex executable can read the run-local Codex credentials and therefore
+must be trusted. This project does not sandbox hostile executables. Keep raw
+run directories local and inspect them before sharing any evidence.
+
 ## Development
+
+Pull-request and push CI verifies evaluator mechanics with deterministic tests
+and fake harnesses. It makes no live model calls, receives no model credentials,
+and uploads no evaluation evidence. Authorized operators run live evaluations
+locally; humans inspect the retained evidence and own promotion decisions.
 
 Run the Python test suite and package healthcheck:
 
