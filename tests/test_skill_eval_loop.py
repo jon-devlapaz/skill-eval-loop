@@ -500,6 +500,115 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertNotIn("secret", report_text)
             self.assertNotIn("auth.json", report_text)
 
+    def test_live_run_discards_auth_when_initialization_fails(self) -> None:
+        for failure in ("config", "tasks"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                skill = self.make_skill(root)
+                tasks = root / "tasks.jsonl"
+                tasks.write_text(
+                    '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                    encoding="utf-8",
+                )
+                user_home = root / "user-home"
+                host_auth = user_home / ".codex" / "auth.json"
+                host_auth.parent.mkdir(parents=True)
+                host_auth.write_text('{"OPENAI_API_KEY":"secret"}\n', encoding="utf-8")
+                output = root / "run"
+                spec = importlib.util.spec_from_file_location(
+                    f"skill_eval_loop_auth_cleanup_{failure}", EVALUATOR
+                )
+                self.assertIsNotNone(spec)
+                self.assertIsNotNone(spec.loader)
+                evaluator = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(evaluator)
+                arguments = evaluator.parser().parse_args(
+                    [
+                        "run",
+                        "--skill",
+                        str(skill),
+                        "--tasks",
+                        str(tasks),
+                        "--output",
+                        str(output),
+                        "--harness",
+                        "codex",
+                        "--harness-bin",
+                        str(FAKE_CODEX),
+                        "--model",
+                        "test-model",
+                    ]
+                )
+                plan = evaluator.build_plan(arguments)
+
+                with patch.dict(os.environ, {"HOME": str(user_home)}):
+                    if failure == "config":
+                        with patch.object(
+                            evaluator, "write_json", side_effect=OSError("config write failed")
+                        ):
+                            with self.assertRaisesRegex(OSError, "config write failed"):
+                                evaluator.run_live(plan)
+                    else:
+                        original_copyfile = evaluator.shutil.copyfile
+
+                        def fail_task_copy(source: Path, destination: Path) -> None:
+                            if Path(destination) == output / "tasks.jsonl":
+                                raise OSError("task copy failed")
+                            original_copyfile(source, destination)
+
+                        with patch.object(
+                            evaluator.shutil, "copyfile", side_effect=fail_task_copy
+                        ):
+                            with self.assertRaisesRegex(OSError, "task copy failed"):
+                                evaluator.run_live(plan)
+
+                self.assertTrue((output / "codex-home").is_dir())
+                self.assertFalse((output / "codex-home" / "auth.json").exists())
+
+    def test_calibrate_discards_auth_when_config_initialization_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            user_home = root / "user-home"
+            host_auth = user_home / ".codex" / "auth.json"
+            host_auth.parent.mkdir(parents=True)
+            host_auth.write_text('{"OPENAI_API_KEY":"secret"}\n', encoding="utf-8")
+            output = root / "calibration-run"
+            spec = importlib.util.spec_from_file_location(
+                "skill_eval_loop_calibration_auth_cleanup", EVALUATOR
+            )
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            evaluator = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(evaluator)
+            arguments = evaluator.parser().parse_args(
+                [
+                    "calibrate",
+                    "--fixtures",
+                    str(CALIBRATION_FIXTURES),
+                    "--output",
+                    str(output),
+                    "--harness",
+                    "codex",
+                    "--harness-bin",
+                    str(FAKE_CODEX),
+                    "--model",
+                    "gpt-5.6-terra",
+                    "--judge-model",
+                    "gpt-5.6-sol",
+                ]
+            )
+            plan = evaluator.build_calibration_plan(arguments)
+
+            with patch.dict(os.environ, {"HOME": str(user_home)}):
+                with patch.object(
+                    evaluator, "write_json", side_effect=OSError("config write failed")
+                ):
+                    with self.assertRaisesRegex(OSError, "config write failed"):
+                        evaluator.run_calibrate(plan)
+
+            self.assertTrue((output / "codex-home").is_dir())
+            self.assertFalse((output / "codex-home" / "auth.json").exists())
+
     def test_live_run_marks_model_mismatch_invalid_and_preserves_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

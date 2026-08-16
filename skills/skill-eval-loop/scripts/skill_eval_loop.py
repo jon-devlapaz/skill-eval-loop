@@ -1328,22 +1328,25 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
     skill_name = skill.name
     output.mkdir(parents=True)
     codex_directory = prepare_run_codex_home(output)
-    write_json(output / "config.json", {"mode": "live", "configuration": configuration, "counts": plan["counts"]})
-    shutil.copyfile(tasks_path, output / "tasks.jsonl")
-    result: dict[str, Any] = {
-        "valid": True,
-        "mode": "live",
-        "output_dir": str(output),
-        "configuration": configuration,
-        "counts": plan["counts"],
-        "activation": {"status": "unknown", "reason": "telemetry_unavailable"},
-        "calibration_status": calibration_status,
-        "fixtures_sha256": fixtures_sha256,
-        "quality_status": "not_required",
-        "pairs": [],
-    }
-    quality_statuses: list[str] = []
     try:
+        write_json(
+            output / "config.json",
+            {"mode": "live", "configuration": configuration, "counts": plan["counts"]},
+        )
+        shutil.copyfile(tasks_path, output / "tasks.jsonl")
+        result: dict[str, Any] = {
+            "valid": True,
+            "mode": "live",
+            "output_dir": str(output),
+            "configuration": configuration,
+            "counts": plan["counts"],
+            "activation": {"status": "unknown", "reason": "telemetry_unavailable"},
+            "calibration_status": calibration_status,
+            "fixtures_sha256": fixtures_sha256,
+            "quality_status": "not_required",
+            "pairs": [],
+        }
+        quality_statuses: list[str] = []
         for task in tasks:
             for trial in range(1, configuration["trials"] + 1):
                 pair_dir = output / f"task-{task['id']}" / f"trial-{trial:03d}"
@@ -1508,22 +1511,22 @@ def run_calibrate(plan: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"output directory already exists: {output}")
     output.mkdir(parents=True)
     codex_directory = prepare_run_codex_home(output)
-    write_json(
-        output / "config.json",
-        {"mode": "calibrate", "configuration": configuration, "counts": plan["counts"]},
-    )
-    result: dict[str, Any] = {
-        "valid": True,
-        "accepted": False,
-        "mode": "calibrate",
-        "output_dir": str(output),
-        "configuration": configuration,
-        "minimum_agreements": suite["minimum_agreements"],
-        "agreements": 0,
-        "disagreements": [],
-        "cases": [],
-    }
     try:
+        write_json(
+            output / "config.json",
+            {"mode": "calibrate", "configuration": configuration, "counts": plan["counts"]},
+        )
+        result: dict[str, Any] = {
+            "valid": True,
+            "accepted": False,
+            "mode": "calibrate",
+            "output_dir": str(output),
+            "configuration": configuration,
+            "minimum_agreements": suite["minimum_agreements"],
+            "agreements": 0,
+            "disagreements": [],
+            "cases": [],
+        }
         for index, case in enumerate(suite["cases"], start=1):
             judged = run_calibration_case(
                 output=output,
