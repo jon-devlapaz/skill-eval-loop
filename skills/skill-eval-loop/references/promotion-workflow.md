@@ -90,6 +90,10 @@ The output reports:
 - treatment improvements and control-winning regressions;
 - usage, recorded cost, and explicit limitations.
 
+It also retains hash-listed copies of the manifest, holdout attestation, and
+both complete reviewer files so the final handoff does not depend on scattered
+inputs.
+
 `complete_human_review` means the evidence package is complete. It does not mean
 the skill should be promoted. The decision owner must inspect disagreements and
 regressions and record the business decision separately.

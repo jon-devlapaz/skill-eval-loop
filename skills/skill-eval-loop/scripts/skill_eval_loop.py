@@ -2069,10 +2069,8 @@ def finalize_review(arguments: argparse.Namespace) -> int:
         raise ValueError("manifest: run hash does not match the retained promotion run")
     if manifest.get("tasks_sha256") != configuration.get("tasks_sha256"):
         raise ValueError("manifest: tasks hash does not match the retained promotion run")
-    attestation = load_json_object(
-        absolute_path(arguments.holdout_attestation, "holdout-attestation"),
-        "holdout attestation",
-    )
+    attestation_path = absolute_path(arguments.holdout_attestation, "holdout-attestation")
+    attestation = load_json_object(attestation_path, "holdout attestation")
     if attestation.get("version") != 1:
         raise ValueError("holdout attestation field version: must be 1")
     if attestation.get("tasks_sha256") != configuration.get("tasks_sha256"):
@@ -2116,9 +2114,9 @@ def finalize_review(arguments: argparse.Namespace) -> int:
     if len(arguments.labels) != 2:
         raise ValueError("finalize-review requires exactly two independent label files")
     manifest_hash = hash_file(manifest_path)
+    label_paths = [absolute_path(value, "labels") for value in arguments.labels]
     reviews = [
-        load_reviewer_labels(absolute_path(value, "labels"), manifest_hash, items)
-        for value in arguments.labels
+        load_reviewer_labels(path, manifest_hash, items) for path in label_paths
     ]
     reviewers = [review[0] for review in reviews]
     if len(set(reviewers)) != 2:
@@ -2271,6 +2269,21 @@ def finalize_review(arguments: argparse.Namespace) -> int:
         "regressions": regressions,
         "usage": run.get("usage"),
         "cost": {"usd": arguments.cost_usd, "note": cost_note},
+        "artifacts": {
+            "manifest": {"path": "manifest.json", "sha256": hash_file(manifest_path)},
+            "holdout_attestation": {
+                "path": "holdout-attestation.json",
+                "sha256": hash_file(attestation_path),
+            },
+            "reviewer_1": {
+                "path": "reviewer-001.json",
+                "sha256": hash_file(label_paths[0]),
+            },
+            "reviewer_2": {
+                "path": "reviewer-002.json",
+                "sha256": hash_file(label_paths[1]),
+            },
+        },
         "limitations": [
             "Human identities and holdout custody are operator attestations, not machine-proven.",
             "Automated judging remains same-provider and non-independent.",
@@ -2278,6 +2291,13 @@ def finalize_review(arguments: argparse.Namespace) -> int:
         ],
     }
     output.mkdir(parents=True)
+    for source, name in (
+        (manifest_path, "manifest.json"),
+        (attestation_path, "holdout-attestation.json"),
+        (label_paths[0], "reviewer-001.json"),
+        (label_paths[1], "reviewer-002.json"),
+    ):
+        shutil.copyfile(source, output / name)
     write_json(output / "promotion-review.json", report)
     (output / "promotion-review.md").write_text(
         "\n".join(

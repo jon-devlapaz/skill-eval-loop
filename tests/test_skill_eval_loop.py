@@ -590,6 +590,10 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertEqual(review["cost"], {"usd": 1.25, "note": "Recorded test cost."})
             self.assertEqual(sum(review["outcomes"].values()), 3)
             self.assertTrue((output / "promotion-review.md").is_file())
+            for artifact in review["artifacts"].values():
+                retained = output / artifact["path"]
+                self.assertTrue(retained.is_file())
+                self.assertEqual(artifact["sha256"], self.hash_file(retained))
 
     def test_finalize_review_rejects_incomplete_or_non_independent_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -661,6 +665,23 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             duplicated = self.run_cli(*arguments)
             self.assertEqual(duplicated.returncode, 1)
             self.assertIn("reviewer_id values must be distinct", duplicated.stderr)
+
+            documents[1]["reviewer_id"] = "other-reviewer"
+            label_paths[1].write_text(json.dumps(documents[1]), encoding="utf-8")
+            attestation["coverage"]["adversarial"] = False
+            attestation_path.write_text(json.dumps(attestation), encoding="utf-8")
+            uncovered = self.run_cli(*arguments)
+            self.assertEqual(uncovered.returncode, 1)
+            self.assertIn("every required category must be true", uncovered.stderr)
+
+            attestation["coverage"]["adversarial"] = True
+            attestation_path.write_text(json.dumps(attestation), encoding="utf-8")
+            manifest = json.loads((packet / "manifest.json").read_text(encoding="utf-8"))
+            prompt_path = packet / manifest["items"][0]["prompt"]
+            prompt_path.write_text("tampered", encoding="utf-8")
+            tampered = self.run_cli(*arguments)
+            self.assertEqual(tampered.returncode, 1)
+            self.assertIn("prompt hash does not match the manifest", tampered.stderr)
 
     @staticmethod
     def hash_file(path: Path) -> str:

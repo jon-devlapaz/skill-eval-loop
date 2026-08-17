@@ -329,7 +329,8 @@ distinct reviewers label every transcript and dimension independently with
 rationale. `finalize-review` verifies those inputs against the retained run,
 measures human and automated-judge agreement, restores condition outcomes,
 reports variance by task, regressions, usage, and operator-recorded cost, and
-retains limitations. See the packaged
+retains limitations plus hash-listed copies of the manifest, attestation, and
+complete reviewer inputs. See the packaged
 [promotion workflow](../skills/skill-eval-loop/references/promotion-workflow.md).
 
 The machine cannot authenticate human identity or custody claims. A complete
