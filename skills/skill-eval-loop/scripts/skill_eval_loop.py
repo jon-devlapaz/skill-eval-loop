@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePath
 import random
@@ -476,6 +477,28 @@ def print_json(value: dict[str, Any]) -> None:
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+
+
+def load_json_object(path: Path, label: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{label}: invalid JSON: {exc.msg}") from exc
+    if not isinstance(value, dict):
+        raise ValueError(f"{label}: must be an object")
+    return value
+
+
+def retained_file(root: Path, relative: Any, label: str) -> Path:
+    value = relative_workspace_path(relative, label)
+    path = (root / value).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"{label}: must stay inside the retained run") from exc
+    if not path.is_file():
+        raise ValueError(f"{label}: file does not exist")
+    return path
 
 
 def safe_task_id(task_id: str) -> None:
@@ -1774,13 +1797,24 @@ def calibration_exit_code(result: dict[str, Any]) -> int:
 
 def healthcheck(arguments: argparse.Namespace) -> int:
     root = Path(arguments.skill_dir).resolve() if arguments.skill_dir else Path(__file__).resolve().parents[1]
-    required = ["SKILL.md", "scripts/skill_eval_loop.py", "scripts/skill-eval-loop"]
+    required = [
+        "SKILL.md",
+        "scripts/skill_eval_loop.py",
+        "scripts/skill-eval-loop",
+        "references/promotion-workflow.md",
+    ]
     missing = [relative for relative in required if not (root / relative).is_file()]
     print_json(
         {
             "valid": not missing,
             "skill_dir": str(root),
-            "commands": ["healthcheck", "run", "calibrate"],
+            "commands": [
+                "healthcheck",
+                "run",
+                "calibrate",
+                "prepare-review",
+                "finalize-review",
+            ],
             "errors": [f"{relative} is missing" for relative in missing],
         }
     )
@@ -1805,6 +1839,516 @@ def calibrate(arguments: argparse.Namespace) -> int:
     result = run_calibrate(plan)
     print_json(result)
     return calibration_exit_code(result)
+
+
+def load_reviewable_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], Path]:
+    run_path = run_dir / "run.json"
+    run = load_json_object(run_path, "run")
+    configuration = run.get("configuration")
+    if not isinstance(configuration, dict) or configuration.get("evaluation_role") != "promotion":
+        raise ValueError("run: must be a promotion run")
+    if not run.get("valid") or run.get("quality_status") == "unknown":
+        raise ValueError("run: promotion evidence must be runner-valid and quality-complete")
+    if configuration.get("trials", 0) < 3:
+        raise ValueError("run: promotion evidence must contain at least 3 trials")
+    tasks_path = retained_file(run_dir, "tasks.jsonl", "run tasks")
+    if hash_file(tasks_path) != configuration.get("tasks_sha256"):
+        raise ValueError("run: retained tasks hash does not match the promotion plan")
+    return run, configuration, run_path
+
+
+def prepare_review(arguments: argparse.Namespace) -> int:
+    run_dir = absolute_path(arguments.run_dir, "run-dir")
+    output = absolute_path(arguments.output, "output")
+    run, configuration, run_path = load_reviewable_run(run_dir)
+    if output.exists():
+        raise ValueError(f"output directory already exists: {output}")
+
+    items: list[dict[str, Any]] = []
+    copied: list[tuple[Path, Path]] = []
+    for pair in run.get("pairs", []):
+        if not isinstance(pair, dict):
+            raise ValueError("run field pairs: must contain objects")
+        task_id = required_string(pair.get("task_id"), "run pair field task_id")
+        safe_task_id(task_id)
+        trial = pair.get("trial")
+        if not isinstance(trial, int) or trial < 1:
+            raise ValueError("run pair field trial: must be a positive integer")
+        report_path = retained_file(run_dir, pair.get("report_json"), "run pair report_json")
+        report = load_json_object(report_path, "pair report")
+        if not report.get("runner_valid"):
+            raise ValueError(f"run pair {task_id} trial {trial}: runner is invalid")
+        pairwise = report.get("pairwise")
+        if not isinstance(pairwise, list) or not pairwise:
+            raise ValueError(f"run pair {task_id} trial {trial}: missing pairwise evidence")
+        for index, judgment in enumerate(pairwise, start=1):
+            if not isinstance(judgment, dict) or judgment.get("status") == "unknown":
+                raise ValueError(
+                    f"run pair {task_id} trial {trial} rubric {index}: judgment is incomplete"
+                )
+            artifacts = judgment.get("artifacts")
+            if not isinstance(artifacts, dict):
+                raise ValueError(
+                    f"run pair {task_id} trial {trial} rubric {index}: missing artifacts"
+                )
+            prompt_path = retained_file(report_path.parent, artifacts.get("prompt"), "judge prompt")
+            dimensions = judgment.get("dimensions")
+            if not isinstance(dimensions, list) or not dimensions:
+                raise ValueError(
+                    f"run pair {task_id} trial {trial} rubric {index}: missing dimensions"
+                )
+            dimension_names = [
+                required_string(dimension.get("name"), "judge dimension field name")
+                for dimension in dimensions
+                if isinstance(dimension, dict)
+            ]
+            if len(dimension_names) != len(dimensions):
+                raise ValueError("judge dimensions: must contain objects")
+            item_id = f"{task_id}.trial-{trial:03d}.rubric-{index:03d}"
+            destination = Path("items") / f"{item_id}.txt"
+            copied.append((prompt_path, destination))
+            items.append(
+                {
+                    "id": item_id,
+                    "task_id": task_id,
+                    "trial": trial,
+                    "rubric_index": index,
+                    "prompt": destination.as_posix(),
+                    "prompt_sha256": hash_file(prompt_path),
+                    "dimensions": dimension_names,
+                    "source_report": str(
+                        report_path.resolve().relative_to(run_dir.resolve()).as_posix()
+                    ),
+                }
+            )
+    if not items:
+        raise ValueError("run: no pairwise evidence is available for human review")
+
+    output.mkdir(parents=True)
+    for source, relative in copied:
+        destination = output / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, destination)
+    manifest = {
+        "version": 1,
+        "run_sha256": hash_file(run_path),
+        "tasks_sha256": configuration["tasks_sha256"],
+        "required_reviewers": 2,
+        "items": items,
+    }
+    manifest_path = output / "manifest.json"
+    write_json(manifest_path, manifest)
+    write_json(
+        output / "labels-template.json",
+        {
+            "version": 1,
+            "manifest_sha256": hash_file(manifest_path),
+            "reviewer_id": "",
+            "labels": [
+                {
+                    "item_id": item["id"],
+                    "prompt_sha256": item["prompt_sha256"],
+                    "winner": "",
+                    "rationale": "",
+                    "transcript_reviewed": False,
+                    "dimensions": [
+                        {"name": name, "winner": "", "rationale": ""}
+                        for name in item["dimensions"]
+                    ],
+                }
+                for item in items
+            ],
+        },
+    )
+    write_json(
+        output / "holdout-attestation-template.json",
+        {
+            "version": 1,
+            "tasks_sha256": configuration["tasks_sha256"],
+            "custodian_id": "",
+            "independent_of_skill_authoring": False,
+            "unseen_during_development": False,
+            "coverage": {
+                "positive": False,
+                "negative": False,
+                "ambiguous": False,
+                "near_tie": False,
+                "adversarial": False,
+            },
+            "rationale": "",
+        },
+    )
+    print_json(
+        {
+            "valid": True,
+            "mode": "prepare_review",
+            "output_dir": str(output),
+            "items": len(items),
+            "required_reviewers": 2,
+        }
+    )
+    return 0
+
+
+def load_reviewer_labels(
+    path: Path, manifest_hash: str, items: dict[str, dict[str, Any]]
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    document = load_json_object(path, "labels")
+    if document.get("version") != 1:
+        raise ValueError("labels field version: must be 1")
+    if document.get("manifest_sha256") != manifest_hash:
+        raise ValueError("labels: manifest hash does not match the review packet")
+    reviewer_id = required_string(document.get("reviewer_id"), "labels field reviewer_id")
+    raw_labels = document.get("labels")
+    if not isinstance(raw_labels, list) or len(raw_labels) != len(items):
+        raise ValueError("labels field labels: must cover every review item exactly once")
+    labels: dict[str, dict[str, Any]] = {}
+    for index, raw in enumerate(raw_labels):
+        label = f"labels field labels[{index}]"
+        if not isinstance(raw, dict):
+            raise ValueError(f"{label}: must be an object")
+        item_id = required_string(raw.get("item_id"), f"{label} field item_id")
+        item = items.get(item_id)
+        if item is None or item_id in labels:
+            raise ValueError(f"{label} field item_id: unknown or duplicate value")
+        if raw.get("prompt_sha256") != item["prompt_sha256"]:
+            raise ValueError(f"{label}: prompt hash does not match the review packet")
+        winner = raw.get("winner")
+        if winner not in {"A", "B", "tie"}:
+            raise ValueError(f"{label} field winner: must be A, B, or tie")
+        rationale = required_string(raw.get("rationale"), f"{label} field rationale")
+        if raw.get("transcript_reviewed") is not True:
+            raise ValueError(f"{label} field transcript_reviewed: must be true")
+        raw_dimensions = raw.get("dimensions")
+        if not isinstance(raw_dimensions, list) or len(raw_dimensions) != len(item["dimensions"]):
+            raise ValueError(f"{label} field dimensions: must cover every dimension exactly once")
+        dimensions: dict[str, dict[str, str]] = {}
+        for dimension_index, raw_dimension in enumerate(raw_dimensions):
+            dimension_label = f"{label} field dimensions[{dimension_index}]"
+            if not isinstance(raw_dimension, dict):
+                raise ValueError(f"{dimension_label}: must be an object")
+            name = required_string(raw_dimension.get("name"), f"{dimension_label} field name")
+            if name not in item["dimensions"] or name in dimensions:
+                raise ValueError(f"{dimension_label} field name: unknown or duplicate value")
+            dimension_winner = raw_dimension.get("winner")
+            if dimension_winner not in {"A", "B", "tie"}:
+                raise ValueError(f"{dimension_label} field winner: must be A, B, or tie")
+            dimensions[name] = {
+                "winner": dimension_winner,
+                "rationale": required_string(
+                    raw_dimension.get("rationale"), f"{dimension_label} field rationale"
+                ),
+            }
+        labels[item_id] = {
+            "winner": winner,
+            "rationale": rationale,
+            "transcript_reviewed": True,
+            "dimensions": dimensions,
+        }
+    return reviewer_id, labels
+
+
+def count_agreement(left: str, right: str) -> int:
+    return int(left == right)
+
+
+def finalize_review(arguments: argparse.Namespace) -> int:
+    run_dir = absolute_path(arguments.run_dir, "run-dir")
+    manifest_path = absolute_path(arguments.manifest, "manifest")
+    output = absolute_path(arguments.output, "output")
+    if output.exists():
+        raise ValueError(f"output directory already exists: {output}")
+    if not math.isfinite(arguments.cost_usd) or arguments.cost_usd < 0:
+        raise ValueError("cost-usd must be a finite non-negative number")
+    cost_note = required_string(arguments.cost_note, "cost-note")
+    run, configuration, run_path = load_reviewable_run(run_dir)
+    manifest = load_json_object(manifest_path, "manifest")
+    if manifest.get("version") != 1 or manifest.get("required_reviewers") != 2:
+        raise ValueError("manifest: unsupported review packet")
+    if manifest.get("run_sha256") != hash_file(run_path):
+        raise ValueError("manifest: run hash does not match the retained promotion run")
+    if manifest.get("tasks_sha256") != configuration.get("tasks_sha256"):
+        raise ValueError("manifest: tasks hash does not match the retained promotion run")
+    attestation_path = absolute_path(arguments.holdout_attestation, "holdout-attestation")
+    attestation = load_json_object(attestation_path, "holdout attestation")
+    if attestation.get("version") != 1:
+        raise ValueError("holdout attestation field version: must be 1")
+    if attestation.get("tasks_sha256") != configuration.get("tasks_sha256"):
+        raise ValueError("holdout attestation: tasks hash does not match the promotion run")
+    custodian_id = required_string(
+        attestation.get("custodian_id"), "holdout attestation field custodian_id"
+    )
+    if attestation.get("independent_of_skill_authoring") is not True:
+        raise ValueError("holdout attestation field independent_of_skill_authoring: must be true")
+    if attestation.get("unseen_during_development") is not True:
+        raise ValueError("holdout attestation field unseen_during_development: must be true")
+    coverage = attestation.get("coverage")
+    required_coverage = {"positive", "negative", "ambiguous", "near_tie", "adversarial"}
+    if not isinstance(coverage, dict) or set(coverage) != required_coverage or not all(
+        coverage.values()
+    ):
+        raise ValueError(
+            "holdout attestation field coverage: every required category must be true"
+        )
+    holdout_rationale = required_string(
+        attestation.get("rationale"), "holdout attestation field rationale"
+    )
+    raw_items = manifest.get("items")
+    if not isinstance(raw_items, list) or not raw_items:
+        raise ValueError("manifest field items: must be a non-empty array")
+    items: dict[str, dict[str, Any]] = {}
+    for index, item in enumerate(raw_items):
+        label = f"manifest field items[{index}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{label}: must be an object")
+        item_id = required_string(item.get("id"), f"{label} field id")
+        if item_id in items:
+            raise ValueError(f"{label} field id: duplicate value")
+        prompt = retained_file(manifest_path.parent, item.get("prompt"), f"{label} field prompt")
+        if hash_file(prompt) != item.get("prompt_sha256"):
+            raise ValueError(f"{label}: prompt hash does not match the manifest")
+        dimensions = item.get("dimensions")
+        if not isinstance(dimensions, list) or not dimensions:
+            raise ValueError(f"{label} field dimensions: must be a non-empty array")
+        items[item_id] = item
+    if len(arguments.labels) != 2:
+        raise ValueError("finalize-review requires exactly two independent label files")
+    manifest_hash = hash_file(manifest_path)
+    label_paths = [absolute_path(value, "labels") for value in arguments.labels]
+    reviews = [
+        load_reviewer_labels(path, manifest_hash, items) for path in label_paths
+    ]
+    reviewers = [review[0] for review in reviews]
+    if len(set(reviewers)) != 2:
+        raise ValueError("labels: reviewer_id values must be distinct")
+
+    overall_agreements = 0
+    dimension_agreements = 0
+    dimension_total = 0
+    judge_consensus_agreements = 0
+    judge_consensus_total = 0
+    judge_dimension_consensus_agreements = 0
+    judge_dimension_consensus_total = 0
+    judge_by_reviewer = {
+        reviewer: {
+            "overall": {"agreements": 0, "total": 0},
+            "dimensions": {"agreements": 0, "total": 0},
+        }
+        for reviewer in reviewers
+    }
+    disagreements: list[dict[str, Any]] = []
+    outcomes = {"control": 0, "treatment": 0, "tie": 0}
+    by_task: dict[str, dict[str, int]] = {}
+    regressions: list[str] = []
+    improvements: list[str] = []
+    for item_id, item in items.items():
+        left = reviews[0][1][item_id]
+        right = reviews[1][1][item_id]
+        agreed = left["winner"] == right["winner"]
+        overall_agreements += int(agreed)
+        dimension_disagreements: list[str] = []
+        for name in item["dimensions"]:
+            dimension_total += 1
+            dimension_agreements += count_agreement(
+                left["dimensions"][name]["winner"], right["dimensions"][name]["winner"]
+            )
+            if left["dimensions"][name]["winner"] != right["dimensions"][name]["winner"]:
+                dimension_disagreements.append(name)
+        report_path = retained_file(run_dir, item.get("source_report"), "manifest source_report")
+        report = load_json_object(report_path, "pair report")
+        pairwise = report.get("pairwise")
+        rubric_index = item.get("rubric_index")
+        if not isinstance(pairwise, list) or not isinstance(rubric_index, int) or not (
+            1 <= rubric_index <= len(pairwise)
+        ):
+            raise ValueError(f"manifest item {item_id}: pairwise source is invalid")
+        automated = pairwise[rubric_index - 1]
+        automated_winner = automated.get("winner_label")
+        mapping = automated.get("mapping")
+        if automated_winner not in {"A", "B", "tie"} or not isinstance(mapping, dict):
+            raise ValueError(f"manifest item {item_id}: automated judgment is incomplete")
+        automated_dimensions = {
+            dimension.get("name"): dimension.get("winner")
+            for dimension in automated.get("dimensions", [])
+            if isinstance(dimension, dict)
+        }
+        if set(automated_dimensions) != set(item["dimensions"]):
+            raise ValueError(f"manifest item {item_id}: automated dimensions are incomplete")
+        for reviewer, human in zip(reviewers, (left, right)):
+            judge_by_reviewer[reviewer]["overall"]["total"] += 1
+            judge_by_reviewer[reviewer]["overall"]["agreements"] += int(
+                automated_winner == human["winner"]
+            )
+            for name in item["dimensions"]:
+                judge_by_reviewer[reviewer]["dimensions"]["total"] += 1
+                judge_by_reviewer[reviewer]["dimensions"]["agreements"] += int(
+                    automated_dimensions[name] == human["dimensions"][name]["winner"]
+                )
+        if agreed:
+            judge_consensus_total += 1
+            judge_consensus_agreements += int(automated_winner == left["winner"])
+            outcome = "tie" if left["winner"] == "tie" else mapping.get(left["winner"])
+            if outcome not in outcomes:
+                raise ValueError(f"manifest item {item_id}: candidate mapping is invalid")
+            outcomes[outcome] += 1
+            task_outcomes = by_task.setdefault(
+                required_string(item.get("task_id"), "manifest item field task_id"),
+                {"control": 0, "treatment": 0, "tie": 0},
+            )
+            task_outcomes[outcome] += 1
+            if outcome == "control":
+                regressions.append(item_id)
+            elif outcome == "treatment":
+                improvements.append(item_id)
+        for name in item["dimensions"]:
+            left_winner = left["dimensions"][name]["winner"]
+            right_winner = right["dimensions"][name]["winner"]
+            if left_winner == right_winner:
+                judge_dimension_consensus_total += 1
+                judge_dimension_consensus_agreements += int(
+                    automated_dimensions[name] == left_winner
+                )
+        if not agreed or dimension_disagreements:
+            disagreements.append(
+                {
+                    "item_id": item_id,
+                    "overall": {
+                        reviewers[0]: {"winner": left["winner"], "rationale": left["rationale"]},
+                        reviewers[1]: {
+                            "winner": right["winner"],
+                            "rationale": right["rationale"],
+                        },
+                    },
+                    "dimensions": dimension_disagreements,
+                }
+            )
+
+    trial_variance = {
+        task_id: {
+            "status": "stable" if sum(count > 0 for count in counts.values()) == 1 else "mixed",
+            "outcomes": counts,
+        }
+        for task_id, counts in by_task.items()
+    }
+    report = {
+        "version": 1,
+        "evidence_status": "complete_human_review",
+        "promotion_decision": "human_owner_required",
+        "run_binding": {
+            "run_sha256": hash_file(run_path),
+            "tasks_sha256": configuration["tasks_sha256"],
+            "skill_sha256": configuration["skill_sha256"],
+            "calibration_sha256": configuration.get("calibration_sha256"),
+            "fixtures_sha256": configuration.get("fixtures_sha256"),
+        },
+        "reviewers": reviewers,
+        "holdout": {
+            "custodian_id": custodian_id,
+            "independent_of_skill_authoring": True,
+            "unseen_during_development": True,
+            "coverage": coverage,
+            "rationale": holdout_rationale,
+        },
+        "human_agreement": {
+            "overall": {"agreements": overall_agreements, "total": len(items)},
+            "dimensions": {"agreements": dimension_agreements, "total": dimension_total},
+        },
+        "disagreements": disagreements,
+        "automated_judge_agreement": {
+            "status": "provisional_non_independent",
+            "with_human_consensus": {
+                "agreements": judge_consensus_agreements,
+                "total": judge_consensus_total,
+            },
+            "dimensions_with_human_consensus": {
+                "agreements": judge_dimension_consensus_agreements,
+                "total": judge_dimension_consensus_total,
+            },
+            "by_reviewer": judge_by_reviewer,
+        },
+        "transcript_review": {
+            "reviewed_labels": len(items) * 2,
+            "required_labels": len(items) * 2,
+        },
+        "outcomes": outcomes,
+        "outcomes_by_task": by_task,
+        "trial_variance": trial_variance,
+        "improvements": improvements,
+        "regressions": regressions,
+        "usage": run.get("usage"),
+        "cost": {"usd": arguments.cost_usd, "note": cost_note},
+        "artifacts": {
+            "manifest": {"path": "manifest.json", "sha256": hash_file(manifest_path)},
+            "holdout_attestation": {
+                "path": "holdout-attestation.json",
+                "sha256": hash_file(attestation_path),
+            },
+            "reviewer_1": {
+                "path": "reviewer-001.json",
+                "sha256": hash_file(label_paths[0]),
+            },
+            "reviewer_2": {
+                "path": "reviewer-002.json",
+                "sha256": hash_file(label_paths[1]),
+            },
+        },
+        "limitations": [
+            "Human identities and holdout custody are operator attestations, not machine-proven.",
+            "Automated judging remains same-provider and non-independent.",
+            "This evidence package informs but does not make the promotion decision.",
+        ],
+    }
+    output.mkdir(parents=True)
+    for source, name in (
+        (manifest_path, "manifest.json"),
+        (attestation_path, "holdout-attestation.json"),
+        (label_paths[0], "reviewer-001.json"),
+        (label_paths[1], "reviewer-002.json"),
+    ):
+        shutil.copyfile(source, output / name)
+    write_json(output / "promotion-review.json", report)
+    (output / "promotion-review.md").write_text(
+        "\n".join(
+            [
+                "# Promotion review",
+                "",
+                "Evidence status: complete human review",
+                "Promotion decision: human owner required",
+                f"Reviewers: {', '.join(reviewers)}",
+                f"Human overall agreement: {overall_agreements}/{len(items)}",
+                f"Human dimension agreement: {dimension_agreements}/{dimension_total}",
+                f"Human disagreements: {len(disagreements)}",
+                (
+                    "Automated judge agreement with human consensus: "
+                    f"{judge_consensus_agreements}/{judge_consensus_total}"
+                ),
+                f"Outcomes: {json.dumps(outcomes, sort_keys=True)}",
+                f"Trial variance: {json.dumps(trial_variance, sort_keys=True)}",
+                f"Improvements: {len(improvements)}",
+                f"Regressions: {len(regressions)}",
+                f"Recorded cost (USD): {arguments.cost_usd:.2f}",
+                "",
+                "Evidence artifacts:",
+                "- [Review manifest](manifest.json)",
+                "- [Holdout attestation](holdout-attestation.json)",
+                "- [Reviewer 1 labels](reviewer-001.json)",
+                "- [Reviewer 2 labels](reviewer-002.json)",
+                "",
+                "The accountable human owner must inspect disagreements and decide promotion.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    print_json(
+        {
+            "valid": True,
+            "mode": "finalize_review",
+            "output_dir": str(output),
+            "evidence_status": report["evidence_status"],
+        }
+    )
+    return 0
 
 
 def parser() -> argparse.ArgumentParser:
@@ -1843,6 +2387,23 @@ def parser() -> argparse.ArgumentParser:
     calibrate_parser.add_argument("--timeout-seconds", type=int, default=120)
     calibrate_parser.add_argument("--dry-run", action="store_true")
     calibrate_parser.set_defaults(handler=calibrate)
+    review_parser = commands.add_parser(
+        "prepare-review", help="create a blinded human-review packet from a promotion run"
+    )
+    review_parser.add_argument("--run-dir", required=True)
+    review_parser.add_argument("--output", required=True)
+    review_parser.set_defaults(handler=prepare_review)
+    finalize_parser = commands.add_parser(
+        "finalize-review", help="measure two human reviews against retained promotion evidence"
+    )
+    finalize_parser.add_argument("--run-dir", required=True)
+    finalize_parser.add_argument("--manifest", required=True)
+    finalize_parser.add_argument("--holdout-attestation", required=True)
+    finalize_parser.add_argument("--labels", action="append", required=True)
+    finalize_parser.add_argument("--cost-usd", type=float, required=True)
+    finalize_parser.add_argument("--cost-note", required=True)
+    finalize_parser.add_argument("--output", required=True)
+    finalize_parser.set_defaults(handler=finalize_review)
     return result
 
 

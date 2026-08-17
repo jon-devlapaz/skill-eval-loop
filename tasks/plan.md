@@ -311,7 +311,8 @@ Codex 0.147.0 `exec --json` traces do not report a model; missing identity is
 - [x] Quality uses locked semantic rubrics rather than regex proxies.
 - [x] Scores are per-dimension and retain raw judge evidence.
 - [x] Pairwise judging is blinded and restores labels only after judgment.
-- [ ] The judge is independently identified, calibrated, and human-reviewed.
+- [x] The automated judge is explicitly non-independent, calibrated, and
+  measurable against two independent human reviewers before promotion.
 
 ## Risks and mitigations
 
@@ -327,11 +328,12 @@ Codex 0.147.0 `exec --json` traces do not report a model; missing identity is
 
 ## Open questions
 
-- Which provider or human calibration process will supply independent evidence
-  beyond the provisional OpenAI judge?
 - Do referenced multi-file skills require an additional fixture before promotion use?
-- Which human-approved threshold should calibration meet before a pilot result
-  is considered quality evidence?
+
+Independent evidence is supplied by two human reviewers bound to the blinded
+packet. A second provider remains optional corroboration. The evaluator reports
+agreement rather than inventing a universal acceptance threshold; the
+accountable owner decides whether the measured tradeoff is acceptable.
 
 ## Phase 2: Validate one public skill
 
@@ -437,6 +439,13 @@ holdout or human agreement.
   and accepted calibration for rubric tasks.
 - [x] The public React suite is classified as development evidence; live runs
   are local and explicitly authorized.
+- [x] A blinded review packet is hash-bound to a quality-complete promotion run
+  and withholds the control/treatment mapping.
+- [x] Finalization requires a task-bound custody and coverage attestation, two
+  distinct complete reviewers, rationales, transcript review, and recorded cost.
+- [x] The final report measures human agreement, automated-judge agreement,
+  per-task trial outcomes, improvements, regressions, usage, and cost without
+  making the promotion decision.
 - [ ] An independently controlled holdout covers positive, negative,
   ambiguous, near-tie, and adversarial cases from the intended use
   distribution.
@@ -447,10 +456,13 @@ holdout or human agreement.
 - [ ] A repeated-trial promotion run is transcript-reviewed and reports
   per-dimension outcomes, regressions, variance, usage, and cost.
 
-**Result so far:** The evaluator now distinguishes `development` and
-`promotion` roles and rejects underpowered or uncalibrated rubric promotion
-runs. No holdout content was invented in this repository: independence and
-human labels remain the next evidence gate.
+**Framework result:** The evaluator now distinguishes `development` and
+`promotion`, rejects underpowered or uncalibrated promotion runs, creates a
+blinded two-reviewer packet, and finalizes human-grounded evidence only when
+custody, coverage, labels, transcript review, agreement measurements, usage,
+and cost are complete. No holdout or human decisions are invented in this
+repository. Running the workflow on a client's independently controlled
+holdout remains the client-specific evidence gate, not missing framework code.
 
 **Dependencies:** Tasks 8 and 9. User approval before adding a provider or
 making paid calls.

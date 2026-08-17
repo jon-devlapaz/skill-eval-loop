@@ -126,8 +126,11 @@ calibration, and repeated trials:
 `--promotion` rejects target-owned tasks, fewer than three trials, and rubric
 runs without accepted calibration. It records the promotion role; it does not
 prove task independence, representativeness, human labeling, or judge
-agreement. Retain that evidence separately and keep the holdout unavailable to
-the hill-climbing agent.
+agreement. Keep the holdout unavailable to the hill-climbing agent, then follow
+[`references/promotion-workflow.md`](references/promotion-workflow.md): run
+`prepare-review`, collect the custodian attestation and two independent label
+files, and run
+`finalize-review` before making a promotion claim.
 
 ## Calibrate the pairwise judge
 
@@ -235,3 +238,10 @@ response before making a quality claim.
 Do not claim broad skill quality from one pilot or from same-provider judging.
 Use realistic unsaturated tasks, repeated trials, deterministic outcomes,
 blinded comparison, human calibration, and human transcript review.
+
+`prepare-review` and `finalize-review` are the final evidence loop. The first
+copies only blinded A/B prompts into a hash-bound packet. The second fails closed
+unless the packet, retained run, holdout attestation, two distinct reviewers,
+every transcript, every dimension, rationales, and recorded cost are complete.
+Its `complete_human_review` status means the evidence is ready for an accountable
+human decision; it is not an automated promotion verdict.
