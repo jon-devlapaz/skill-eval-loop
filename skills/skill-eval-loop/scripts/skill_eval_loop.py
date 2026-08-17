@@ -2317,13 +2317,22 @@ def finalize_review(arguments: argparse.Namespace) -> int:
                 f"Reviewers: {', '.join(reviewers)}",
                 f"Human overall agreement: {overall_agreements}/{len(items)}",
                 f"Human dimension agreement: {dimension_agreements}/{dimension_total}",
+                f"Human disagreements: {len(disagreements)}",
                 (
                     "Automated judge agreement with human consensus: "
                     f"{judge_consensus_agreements}/{judge_consensus_total}"
                 ),
                 f"Outcomes: {json.dumps(outcomes, sort_keys=True)}",
+                f"Trial variance: {json.dumps(trial_variance, sort_keys=True)}",
+                f"Improvements: {len(improvements)}",
                 f"Regressions: {len(regressions)}",
                 f"Recorded cost (USD): {arguments.cost_usd:.2f}",
+                "",
+                "Evidence artifacts:",
+                "- [Review manifest](manifest.json)",
+                "- [Holdout attestation](holdout-attestation.json)",
+                "- [Reviewer 1 labels](reviewer-001.json)",
+                "- [Reviewer 2 labels](reviewer-002.json)",
                 "",
                 "The accountable human owner must inspect disagreements and decide promotion.",
                 "",

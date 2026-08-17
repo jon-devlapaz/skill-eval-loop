@@ -590,11 +590,12 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertEqual(review["cost"], {"usd": 1.25, "note": "Recorded test cost."})
             self.assertEqual(sum(review["outcomes"].values()), 3)
             self.assertEqual(review["trial_variance"]["choice"]["status"], "stable")
-            self.assertTrue((output / "promotion-review.md").is_file())
+            markdown = (output / "promotion-review.md").read_text(encoding="utf-8")
             for artifact in review["artifacts"].values():
                 retained = output / artifact["path"]
                 self.assertTrue(retained.is_file())
                 self.assertEqual(artifact["sha256"], self.hash_file(retained))
+                self.assertIn(f"]({artifact['path']})", markdown)
 
     def test_finalize_review_rejects_incomplete_or_non_independent_labels(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
