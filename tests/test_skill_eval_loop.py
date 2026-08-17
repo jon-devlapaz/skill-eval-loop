@@ -589,6 +589,7 @@ class SkillEvalLoopCliTests(unittest.TestCase):
             self.assertEqual(review["transcript_review"]["reviewed_labels"], 6)
             self.assertEqual(review["cost"], {"usd": 1.25, "note": "Recorded test cost."})
             self.assertEqual(sum(review["outcomes"].values()), 3)
+            self.assertEqual(review["trial_variance"]["choice"]["status"], "stable")
             self.assertTrue((output / "promotion-review.md").is_file())
             for artifact in review["artifacts"].values():
                 retained = output / artifact["path"]

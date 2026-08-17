@@ -2223,6 +2223,13 @@ def finalize_review(arguments: argparse.Namespace) -> int:
                 }
             )
 
+    trial_variance = {
+        task_id: {
+            "status": "stable" if sum(count > 0 for count in counts.values()) == 1 else "mixed",
+            "outcomes": counts,
+        }
+        for task_id, counts in by_task.items()
+    }
     report = {
         "version": 1,
         "evidence_status": "complete_human_review",
@@ -2265,6 +2272,7 @@ def finalize_review(arguments: argparse.Namespace) -> int:
         },
         "outcomes": outcomes,
         "outcomes_by_task": by_task,
+        "trial_variance": trial_variance,
         "improvements": improvements,
         "regressions": regressions,
         "usage": run.get("usage"),
