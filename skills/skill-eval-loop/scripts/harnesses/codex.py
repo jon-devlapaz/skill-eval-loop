@@ -88,6 +88,9 @@ class CodexAdapter(BaseHarnessAdapter):
         home = prepare_run_codex_home(output_dir)
         return {"CODEX_HOME": str(home)}, home
 
+    def invocation_env(self, invocation_dir: Path) -> dict[str, str]:
+        return {"HOME": str(invocation_dir / "home")}
+
     def build_command(
         self,
         *,

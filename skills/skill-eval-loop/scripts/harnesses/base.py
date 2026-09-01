@@ -9,6 +9,12 @@ import subprocess
 from typing import Any
 
 
+@dataclass(frozen=True)
+class ModelListing:
+    models: tuple[str, ...] = ()
+    source: str = "unavailable"
+
+
 INFRASTRUCTURE_FAILURE_MARKERS = (
     "failed to lookup address information",
     "error sending request",
@@ -80,6 +86,9 @@ class BaseHarnessAdapter:
     def prepare_environment(self, output_dir: Path) -> tuple[dict[str, str], Path | None]:
         return noop_env()
 
+    def invocation_env(self, invocation_dir: Path) -> dict[str, str]:
+        return {}
+
     def cleanup_environment(self, home_dir: Path | None) -> None:
         if home_dir is not None and home_dir.exists():
             shutil.rmtree(home_dir, ignore_errors=True)
@@ -108,3 +117,18 @@ class BaseHarnessAdapter:
 
     def is_infrastructure_failure(self, message: str) -> bool:
         return is_infrastructure_failure(message)
+
+    def list_models(self, executable: str) -> ModelListing:
+        return ModelListing()
+
+
+def reject_unknown_model(listing: ModelListing, model: str, label: str, harness: str) -> None:
+    if not listing.models:
+        return
+    if model in listing.models:
+        return
+    available = ", ".join(listing.models)
+    raise ValueError(
+        f"{label} {model!r} is not available on harness {harness!r}; "
+        f"available models ({listing.source}): {available}"
+    )

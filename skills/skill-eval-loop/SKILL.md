@@ -1,6 +1,6 @@
 ---
 name: skill-eval-loop
-description: Run a paired, evidence-retaining Codex evaluation of one local Agent Skill against a no-skill control. Use when measuring whether a skill improves JSONL-defined task outcomes, validating a skill with deterministic graders, or comparing control and treatment responses.
+description: Run a paired, evidence-retaining evaluation of one local Agent Skill against a no-skill control. Use when measuring whether a skill improves JSONL-defined task outcomes, validating a skill with deterministic graders, or comparing control and treatment responses.
 ---
 
 # Skill Eval Loop
@@ -17,6 +17,22 @@ Use the installed skill's public launcher. It requires only Python 3.
 ```bash
 EVALUATOR=/absolute/path/to/skill-eval-loop/scripts/skill-eval-loop
 "$EVALUATOR" healthcheck
+```
+
+List model ids a harness can enumerate before choosing `--model` or
+`--judge-model`. If the listing is non-empty, `run` and `calibrate` dry-runs
+reject ids that are not on it. An empty listing does not reject. Muse reads
+its local catalog; Cursor Agent and Pi call `--list-models`; Antigravity calls
+`agy models`. Other adapters currently return an empty listing. `--harness
+script` wraps any other binary.
+
+For a quality-complete rubric run, use the same `--harness` for student and
+judge. A different `--judge-harness` can mark a live run `independent`, but
+`calibrate` then cannot bind: binding requires
+`provisional_non_independent` cases.
+
+```bash
+"$EVALUATOR" models --harness pi --harness-bin /absolute/path/to/pi
 ```
 
 Use newline-delimited JSON tasks. Each task needs a path-safe `id`, a non-empty
@@ -64,15 +80,15 @@ missing-suite error is the precondition for this coordinator workflow.
 ## Plan the exact run
 
 Pass absolute paths and a fresh output directory. Dry-run validates consumed
-inputs, resolves the Codex executable, hashes the skill and tasks, and creates
+inputs, resolves the harness executable, hashes the skill and tasks, and creates
 neither run artifacts nor provider calls.
 
 ```bash
 "$EVALUATOR" run \
   --skill /absolute/path/to/target-skill \
-  --output /absolute/path/to/fresh-run \
-  --harness codex \
-  --harness-bin /absolute/path/to/codex \
+  --output /absolute/path/to/.eval-output/fresh-run \
+  --harness pi \
+  --harness-bin /absolute/path/to/pi \
   --model exact-model-id \
   --judge-model exact-judge-model-id \
   --calibration /absolute/path/to/fresh-calibration/calibration.json \
@@ -95,10 +111,8 @@ the planned run. The retained fixture path must still exist at its recorded
 absolute path with the same SHA-256 hash. Omitting `--calibration` is allowed,
 but a rubric run then remains quality-incomplete and cannot exit `0`.
 
-The judge must differ from the runner model. An OpenAI model judging another
-OpenAI model is explicitly same-provider evidence, not an independent judgment.
-A recommended OpenAI-only pair is `--model gpt-5.6-terra --judge-model
-gpt-5.6-sol`.
+The judge must differ from the runner model. Same-provider judging is
+same-provider evidence, not an independent judgment.
 
 The default evaluation role is `development`. Treat any suite visible to the
 skill author or repeatedly used during hill-climbing as development or
@@ -111,9 +125,9 @@ calibration, and repeated trials:
 "$EVALUATOR" run \
   --skill /absolute/path/to/target-skill \
   --tasks /absolute/path/to/operator-controlled-holdout.jsonl \
-  --output /absolute/path/to/fresh-promotion-run \
-  --harness codex \
-  --harness-bin /absolute/path/to/codex \
+  --output /absolute/path/to/.eval-output/fresh-promotion-run \
+  --harness pi \
+  --harness-bin /absolute/path/to/pi \
   --model exact-model-id \
   --judge-model exact-judge-model-id \
   --calibration /absolute/path/to/fresh-calibration/calibration.json \
@@ -141,9 +155,9 @@ with rationale. The judge sees anonymized `A`/`B` text only.
 ```bash
 "$EVALUATOR" calibrate \
   --fixtures /absolute/path/to/calibration/v1.json \
-  --output /absolute/path/to/fresh-calibration \
-  --harness codex \
-  --harness-bin /absolute/path/to/codex \
+  --output /absolute/path/to/.eval-output/fresh-calibration \
+  --harness pi \
+  --harness-bin /absolute/path/to/pi \
   --model exact-model-id \
   --judge-model exact-judge-model-id \
   --dry-run
@@ -176,7 +190,7 @@ Run the identical command without `--dry-run`. The runner:
   `SKILL.md` instructions before that task;
 - runs sequentially, alternating control-first and treatment-first by trial;
 - emits invocation progress to stderr and stops after a detected infrastructure failure;
-- invokes Codex in read-only mode;
+- invokes the configured harness with that adapter's argv;
 - retains response, trace, stderr, execution metadata, and reports;
 - records treatment instruction delivery and requires deterministic gates before
   any rubric judge;
@@ -188,7 +202,7 @@ runner may show `both_pass`, `both_fail`, `control_only`, or `treatment_only`.
 Read both responses before making a quality claim.
 
 For rubric tasks, inspect each condition's `rubric_judgments`, the pair's
-`pairwise` evidence, and `dimension_results`. A successful Codex judgment is
+`pairwise` evidence, and `dimension_results`. A successful same-harness judgment is
 labeled `provisional_non_independent`. A timeout, failed deterministic gate,
 malformed response, mismatched judge identity, or identical runner and judge
 model produces `unknown`. If the trace does not report a model, the requested
@@ -204,7 +218,7 @@ dimension favors the condition opposing the overall winner, or the restored
 winner condition. A tied dimension does not contradict an overall winner.
 An overall winner is never a quality pass when a dimension is unknown or
 disagrees. Evaluator-owned treatment injection is `observed`; optional trace
-telemetry records whether Codex also opened the installed `SKILL.md`. Delivery
+telemetry records whether the harness also opened the installed `SKILL.md`. Delivery
 proves exposure, not faithful compliance.
 A bound accepted calibration records `calibration_status: accepted`
 and `fixtures_sha256` in `run.json` and every pair report. Without a binding,
@@ -220,14 +234,15 @@ degenerate, unavailable, or hash-drifted supplied calibration is runner-invalid.
 Read `run.json` followed by each pair's `report.json`, `report.md`, responses,
 traces, and stderr. Confirm the control lacks the target skill, the treatment
 contains the source hash, and any trace-reported model identity agrees with the
-requested model.
+requested model. Write `--output` under the repo's gitignored `.eval-output/`
+directory or outside the repository.
 
-A live run creates `$output/codex-home` and points Codex at that directory.
-If `~/.codex/auth.json` exists, it is copied there for the process. The entire
-run-local Codex home is removed afterward; it is not retained evidence. Use only a trusted
-harness: it can read the run-local credential file, and this evaluator is not
-a sandbox for hostile executables. Keep raw runs local and inspect them before
-sharing. Host Codex skills are not part of the intervention.
+A live run lets the adapter prepare a run-local home and env, then deletes that
+home afterward; it is not retained evidence. Codex copies `~/.codex/auth.json`
+into `CODEX_HOME` when present. Use only a trusted harness: it can read local
+credentials, and this evaluator is not a sandbox for hostile executables. Keep
+raw runs local and inspect them before sharing. Host-installed harness skills
+are not part of the intervention.
 
 Treat injection of the exact hashed payload's `SKILL.md` instructions as the
 intervention. The control receives the original task; the treatment receives

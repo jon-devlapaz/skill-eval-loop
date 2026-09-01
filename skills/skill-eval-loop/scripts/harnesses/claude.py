@@ -48,6 +48,12 @@ class ClaudeAdapter(BaseHarnessAdapter):
         try:
             data = json.loads(text)
             if isinstance(data, dict):
+                if data.get("is_error"):
+                    result.failure_message = str(
+                        data.get("result") or data.get("error") or "harness reported an error"
+                    ).strip()
+                    result.response = ""
+                    return result.as_dict()
                 result.response = str(
                     data.get("result", data.get("text", data.get("response", text)))
                 ).strip()
