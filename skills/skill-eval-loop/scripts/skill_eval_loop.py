@@ -44,10 +44,11 @@ from core.models import (  # noqa: E402
 )
 from core.review import Agreement, ReviewItem, ReviewPacket, ReviewerLabels  # noqa: E402
 from core.util import (  # noqa: E402
-    absolute_path,
     hash_file,
     load_json_object,
     normalized_id,
+    prepare_output_directory,
+    user_path,
     print_json,
     relative_workspace_path,
     required_string,
@@ -93,6 +94,10 @@ def require_harness_models(
 
 def error(message: str) -> None:
     print(f"ERROR: {message}", file=sys.stderr)
+
+
+HEARTBEAT_SECONDS = 15
+TERMINATE_GRACE_SECONDS = 5
 
 
 def progress(message: str) -> None:
@@ -386,7 +391,7 @@ def hash_skill(root: Path) -> str:
 
 def resolve_tasks_path(skill: Path, value: str | None) -> Path:
     if value is not None:
-        return absolute_path(value, "tasks")
+        return user_path(value, "tasks", must_exist=True)
     owned_suite = skill / "evals" / "tasks.jsonl"
     if not owned_suite.is_file():
         raise ValueError(
@@ -421,8 +426,8 @@ def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("promotion runs require an explicit independently controlled tasks path")
     if arguments.promotion and arguments.trials < 3:
         raise ValueError("promotion runs require at least 3 trials")
-    skill = absolute_path(arguments.skill, "skill")
-    output = absolute_path(arguments.output, "output")
+    skill = user_path(arguments.skill, "skill", must_exist=True)
+    output = user_path(arguments.output, "output")
     if not (skill / "SKILL.md").is_file():
         raise ValueError("skill path must contain SKILL.md")
     tasks_path = resolve_tasks_path(skill, arguments.tasks)
@@ -438,7 +443,7 @@ def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
     calibration: dict[str, Any] | None = None
     if arguments.calibration is not None:
         try:
-            calibration_path = absolute_path(arguments.calibration, "calibration")
+            calibration_path = user_path(arguments.calibration, "calibration", must_exist=True)
         except ValueError as exc:
             raise CalibrationBindingError(str(exc)) from exc
         calibration = load_calibration_binding(calibration_path, arguments.model, arguments.judge_model).as_dict()
@@ -667,25 +672,41 @@ class HarnessRuntime:
         )
         started = time.monotonic()
         timed_out = False
+        exit_code = -1
+        timeout_seconds = int(self.configuration["timeout_seconds"])
+        deadline = started + timeout_seconds
         progress(f"starting {display_name}")
-        try:
-            with trace_path.open("w", encoding="utf-8") as trace, stderr_path.open(
-                "w", encoding="utf-8"
-            ) as stderr:
-                completed = subprocess.run(
-                    arguments,
-                    cwd=workspace,
-                    env=environment,
-                    stdin=subprocess.DEVNULL,
-                    stdout=trace,
-                    stderr=stderr,
-                    timeout=self.configuration["timeout_seconds"],
-                    check=False,
-                )
-            exit_code = completed.returncode
-        except subprocess.TimeoutExpired:
-            timed_out = True
-            exit_code = -1
+        with trace_path.open("w", encoding="utf-8") as trace, stderr_path.open(
+            "w", encoding="utf-8"
+        ) as stderr:
+            process = subprocess.Popen(
+                arguments,
+                cwd=workspace,
+                env=environment,
+                stdin=subprocess.DEVNULL,
+                stdout=trace,
+                stderr=stderr,
+            )
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=TERMINATE_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait()
+                    timed_out = True
+                    exit_code = -1
+                    break
+                try:
+                    exit_code = process.wait(timeout=min(HEARTBEAT_SECONDS, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    elapsed = max(1, round(time.monotonic() - started))
+                    progress(
+                        f"[{display_name}] still running... (elapsed: {elapsed}s)"
+                    )
         duration_ms = round((time.monotonic() - started) * 1000)
         observed = adapter.parse_trace(
             trace_path=trace_path,
@@ -1160,8 +1181,7 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
             raise CalibrationBindingError("calibration changed after dry-run planning")
         if binding.fixtures_sha256 != configuration.get("fixtures_sha256"):
             raise CalibrationBindingError("calibration fixture changed after dry-run planning")
-    if output.exists():
-        raise ValueError(f"output directory already exists: {output}")
+    prepare_output_directory(output, bool(plan.get("force")))
     skill_name = skill.name
     output.mkdir(parents=True)
     runtime = HarnessRuntime(output, configuration)
@@ -1294,8 +1314,8 @@ def build_calibration_plan(arguments: argparse.Namespace) -> dict[str, Any]:
         raise ValueError("model, judge-model, and positive timeout-seconds are required")
     if arguments.judge_model == arguments.model:
         raise ValueError("judge-model must differ from model")
-    fixtures = absolute_path(arguments.fixtures, "fixtures")
-    output = absolute_path(arguments.output, "output")
+    fixtures = user_path(arguments.fixtures, "fixtures", must_exist=True)
+    output = user_path(arguments.output, "output")
     suite = load_calibration(fixtures).as_dict()
     judge_harness = getattr(arguments, "judge_harness", None) or target_harness
     executable, version = resolve_harness(target_harness, arguments.harness_bin)
@@ -1396,8 +1416,7 @@ def run_calibrate(plan: dict[str, Any]) -> dict[str, Any]:
     suite = load_calibration(fixtures).as_dict()
     if suite["sha256"] != configuration["fixtures_sha256"]:
         raise ValueError("calibration fixtures changed after dry-run planning")
-    if output.exists():
-        raise ValueError(f"output directory already exists: {output}")
+    prepare_output_directory(output, bool(plan.get("force")))
     output.mkdir(parents=True)
     runtime = HarnessRuntime(output, configuration)
     try:
@@ -1519,6 +1538,7 @@ def run(arguments: argparse.Namespace) -> int:
     if arguments.dry_run:
         print_json(plan)
         return 0
+    plan["force"] = bool(getattr(arguments, "force", False))
     result = run_live(plan)
     print_json(result)
     return live_exit_code(result["valid"], result["quality_status"])
@@ -1529,6 +1549,7 @@ def calibrate(arguments: argparse.Namespace) -> int:
     if arguments.dry_run:
         print_json(plan)
         return 0
+    plan["force"] = bool(getattr(arguments, "force", False))
     result = run_calibrate(plan)
     print_json(result)
     return calibration_exit_code(result)
@@ -1551,11 +1572,10 @@ def load_reviewable_run(run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], 
 
 
 def prepare_review(arguments: argparse.Namespace) -> int:
-    run_dir = absolute_path(arguments.run_dir, "run-dir")
-    output = absolute_path(arguments.output, "output")
+    run_dir = user_path(arguments.run_dir, "run-dir", must_exist=True)
+    output = user_path(arguments.output, "output")
     run, configuration, run_path = load_reviewable_run(run_dir)
-    if output.exists():
-        raise ValueError(f"output directory already exists: {output}")
+    prepare_output_directory(output, arguments.force)
 
     items: list[ReviewItem] = []
     copied: list[tuple[Path, Path]] = []
@@ -1698,11 +1718,10 @@ def count_agreement(left: str, right: str) -> int:
 
 
 def finalize_review(arguments: argparse.Namespace) -> int:
-    run_dir = absolute_path(arguments.run_dir, "run-dir")
-    manifest_path = absolute_path(arguments.manifest, "manifest")
-    output = absolute_path(arguments.output, "output")
-    if output.exists():
-        raise ValueError(f"output directory already exists: {output}")
+    run_dir = user_path(arguments.run_dir, "run-dir", must_exist=True)
+    manifest_path = user_path(arguments.manifest, "manifest", must_exist=True)
+    output = user_path(arguments.output, "output")
+    prepare_output_directory(output, arguments.force)
     if not math.isfinite(arguments.cost_usd) or arguments.cost_usd < 0:
         raise ValueError("cost-usd must be a finite non-negative number")
     cost_note = required_string(arguments.cost_note, "cost-note")
@@ -1714,7 +1733,7 @@ def finalize_review(arguments: argparse.Namespace) -> int:
         raise ValueError("manifest: run hash does not match the retained promotion run")
     if manifest.get("tasks_sha256") != configuration.get("tasks_sha256"):
         raise ValueError("manifest: tasks hash does not match the retained promotion run")
-    attestation_path = absolute_path(arguments.holdout_attestation, "holdout-attestation")
+    attestation_path = user_path(arguments.holdout_attestation, "holdout-attestation", must_exist=True)
     attestation = load_json_object(attestation_path, "holdout attestation")
     if attestation.get("version") != 1:
         raise ValueError("holdout attestation field version: must be 1")
@@ -1759,7 +1778,7 @@ def finalize_review(arguments: argparse.Namespace) -> int:
     if len(arguments.labels) != 2:
         raise ValueError("finalize-review requires exactly two independent label files")
     manifest_hash = hash_file(manifest_path)
-    label_paths = [absolute_path(value, "labels") for value in arguments.labels]
+    label_paths = [user_path(value, "labels", must_exist=True) for value in arguments.labels]
     reviews = [
         load_reviewer_labels(path, manifest_hash, items) for path in label_paths
     ]
@@ -2021,7 +2040,7 @@ def parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--judge-harness-bin")
     run_parser.add_argument("--model", required=True)
     run_parser.add_argument("--trials", type=int, default=1)
-    run_parser.add_argument("--timeout-seconds", type=int, default=120)
+    run_parser.add_argument("--timeout-seconds", type=int, default=300)
     run_parser.add_argument("--judge-model", default="")
     run_parser.add_argument("--calibration")
     run_parser.add_argument(
@@ -2029,6 +2048,7 @@ def parser() -> argparse.ArgumentParser:
         action="store_true",
         help="require an explicit task set, accepted rubric calibration, and at least 3 trials",
     )
+    run_parser.add_argument("--force", "-f", action="store_true")
     run_parser.add_argument("--dry-run", action="store_true")
     run_parser.set_defaults(handler=run)
     calibrate_parser = commands.add_parser(
@@ -2042,7 +2062,8 @@ def parser() -> argparse.ArgumentParser:
     calibrate_parser.add_argument("--judge-harness-bin")
     calibrate_parser.add_argument("--model", required=True)
     calibrate_parser.add_argument("--judge-model", required=True)
-    calibrate_parser.add_argument("--timeout-seconds", type=int, default=120)
+    calibrate_parser.add_argument("--timeout-seconds", type=int, default=300)
+    calibrate_parser.add_argument("--force", "-f", action="store_true")
     calibrate_parser.add_argument("--dry-run", action="store_true")
     calibrate_parser.set_defaults(handler=calibrate)
     review_parser = commands.add_parser(
@@ -2050,6 +2071,7 @@ def parser() -> argparse.ArgumentParser:
     )
     review_parser.add_argument("--run-dir", required=True)
     review_parser.add_argument("--output", required=True)
+    review_parser.add_argument("--force", "-f", action="store_true")
     review_parser.set_defaults(handler=prepare_review)
     finalize_parser = commands.add_parser(
         "finalize-review", help="measure two human reviews against retained promotion evidence"
@@ -2061,6 +2083,7 @@ def parser() -> argparse.ArgumentParser:
     finalize_parser.add_argument("--cost-usd", type=float, required=True)
     finalize_parser.add_argument("--cost-note", required=True)
     finalize_parser.add_argument("--output", required=True)
+    finalize_parser.add_argument("--force", "-f", action="store_true")
     finalize_parser.set_defaults(handler=finalize_review)
     return result
 

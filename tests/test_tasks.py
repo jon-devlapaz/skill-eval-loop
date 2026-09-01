@@ -3,6 +3,7 @@
 import importlib.util
 import json
 from pathlib import Path
+import subprocess
 import tempfile
 
 from helpers import (
@@ -78,6 +79,7 @@ class TaskTests(EvaluatorTestCase):
             self.assertFalse(plan["created_artifacts"])
             self.assertEqual(plan["configuration"]["intervention"], "injected_skill_instructions")
             self.assertEqual(plan["counts"]["total_invocations"], 15)
+            self.assertEqual(plan["configuration"]["timeout_seconds"], 300)
             self.assertEqual(
                 plan["task_snapshot"][0]["graders"][1]["dimensions"][0]["name"],
                 "safe choice",
@@ -227,7 +229,10 @@ class TaskTests(EvaluatorTestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(json.loads(result.stdout)["configuration"]["tasks_path"], str(tasks))
+            self.assertEqual(
+                json.loads(result.stdout)["configuration"]["tasks_path"],
+                str(tasks.resolve()),
+            )
 
 
     def test_promotion_requires_explicit_tasks_and_repeated_trials(self) -> None:
@@ -474,4 +479,48 @@ class TaskTests(EvaluatorTestCase):
             evaluator.copy_skill_payload(skill, destination)
             self.assertFalse((destination / "evals").exists())
             self.assertFalse((destination / "tests").exists())
+
+
+    def test_relative_and_home_paths_resolve_in_the_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(EVALUATOR),
+                    "run",
+                    "--skill",
+                    "~/target-skill",
+                    "--tasks",
+                    "tasks.jsonl",
+                    "--output",
+                    "./fresh-run",
+                    "--harness",
+                    "codex",
+                    "--harness-bin",
+                    str(FAKE_CODEX),
+                    "--model",
+                    "test-model",
+                    "--dry-run",
+                ],
+                cwd=root,
+                text=True,
+                capture_output=True,
+                check=False,
+                env={**self.isolated_env(root), "HOME": str(root)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plan = json.loads(result.stdout)
+            self.assertEqual(plan["configuration"]["skill_path"], str(skill.resolve()))
+            self.assertEqual(plan["configuration"]["tasks_path"], str(tasks.resolve()))
+            self.assertEqual(
+                plan["configuration"]["output_dir"],
+                str((root / "fresh-run").resolve()),
+            )
 

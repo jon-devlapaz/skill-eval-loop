@@ -25,14 +25,18 @@ The public launcher requires Python 3 and no package installation:
 ```bash
 EVALUATOR="$PWD/.agents/skills/skill-eval-loop/scripts/skill-eval-loop"
 "$EVALUATOR" healthcheck
-"$EVALUATOR" models --harness pi --harness-bin /absolute/path/to/pi
+"$EVALUATOR" models --harness pi
 ```
 
 Copy `--model` and `--judge-model` from that harness's listing. If the listing
 is non-empty, `run` and `calibrate` reject ids that are not on it. An empty
-listing does not reject. For a quality-complete rubric run, use the same
-`--harness` for student and judge: a different `--judge-harness` can mark a
-run independent, but that calibration cannot bind.
+listing does not reject. Omit `--harness-bin` when the CLI is on `PATH` or in a
+standard location such as `~/.local/bin`. Relative, `~/`, and symlink paths are
+resolved to canonical absolute paths before validation and recording. Re-use an
+output directory with `--force`. The default timeout is 300 seconds. For a
+quality-complete rubric run, use the same `--harness` for student and judge: a
+different `--judge-harness` can mark a run independent, but that calibration
+cannot bind.
 
 ## Run an evaluation
 
@@ -47,14 +51,12 @@ Run a side-effect-free plan before a live invocation:
 
 ```bash
 "$EVALUATOR" run \
-  --skill /absolute/path/to/target-skill \
-  --tasks /absolute/path/to/tasks.jsonl \
+  --skill ./skills/target-skill \
+  --tasks ./tasks.jsonl \
   --output "$PWD/.eval-output/fresh-run" \
   --harness pi \
-  --harness-bin /absolute/path/to/pi \
   --model exact-model-id \
   --trials 1 \
-  --timeout-seconds 300 \
   --dry-run
 ```
 
@@ -90,7 +92,7 @@ not a quality unknown. Omitting `--calibration` is allowed, but a rubric run
 then remains quality-incomplete and cannot exit `0`.
 
 The runner invokes the configured harness sequentially in read-only mode,
-emitting invocation progress to stderr. Odd trials run control first; even
+emitting invocation start, 15-second heartbeats, and finish lines to stderr. Odd trials run control first; even
 trials run treatment first. The evaluator injects the exact `SKILL.md` text
 itself, so treatment exposure does not depend on model-side discovery. Target,
 judge, and calibration invocations share one lifecycle that uses cleaned
@@ -123,7 +125,6 @@ python3 skills/skill-eval-loop/scripts/skill_eval_loop.py calibrate \
   --fixtures /absolute/path/to/calibration/v1.json \
   --output "$PWD/.eval-output/fresh-calibration" \
   --harness pi \
-  --harness-bin /absolute/path/to/pi \
   --model exact-model-id \
   --judge-model exact-judge-model-id \
   --dry-run

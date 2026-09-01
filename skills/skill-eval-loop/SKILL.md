@@ -79,21 +79,22 @@ missing-suite error is the precondition for this coordinator workflow.
 
 ## Plan the exact run
 
-Pass absolute paths and a fresh output directory. Dry-run validates consumed
-inputs, resolves the harness executable, hashes the skill and tasks, and creates
-neither run artifacts nor provider calls.
+Pass skill, task, and output paths (relative and `~/` paths resolve to
+canonical absolute paths in the retained plan). Re-use an output directory with
+`--force`. Dry-run validates consumed inputs, resolves the harness executable,
+hashes the skill and tasks, and creates neither run artifacts nor provider
+calls. Omit `--harness-bin` when the CLI is on `PATH` or in `~/.local/bin`.
+The default timeout is 300 seconds.
 
 ```bash
 "$EVALUATOR" run \
   --skill /absolute/path/to/target-skill \
   --output /absolute/path/to/.eval-output/fresh-run \
   --harness pi \
-  --harness-bin /absolute/path/to/pi \
   --model exact-model-id \
   --judge-model exact-judge-model-id \
   --calibration /absolute/path/to/fresh-calibration/calibration.json \
   --trials 1 \
-  --timeout-seconds 300 \
   --dry-run
 ```
 

@@ -186,7 +186,7 @@ class CalibrationTests(EvaluatorTestCase):
             )
 
             self.assertEqual(result.returncode, 2, result.stderr)
-            self.assertIn("calibration path must be absolute", result.stderr)
+            self.assertIn("calibration path does not exist", result.stderr)
 
 
     def test_empty_calibration_path_exits_two(self) -> None:
@@ -194,7 +194,7 @@ class CalibrationTests(EvaluatorTestCase):
             result, _, _ = self.run_live_rubric(Path(temporary), calibration="")
 
             self.assertEqual(result.returncode, 2, result.stderr)
-            self.assertIn("calibration path must be absolute", result.stderr)
+            self.assertIn("calibration is required", result.stderr)
 
 
     def test_post_plan_calibration_or_fixture_drift_exits_two(self) -> None:

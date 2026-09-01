@@ -234,7 +234,7 @@ class HarnessTests(EvaluatorTestCase):
                         original_copyfile = evaluator.shutil.copyfile
 
                         def fail_task_copy(source: Path, destination: Path) -> None:
-                            if Path(destination) == output / "tasks.jsonl":
+                            if Path(destination).resolve() == (output / "tasks.jsonl").resolve():
                                 raise OSError("task copy failed")
                             original_copyfile(source, destination)
 
@@ -883,4 +883,129 @@ class HarnessTests(EvaluatorTestCase):
         self.assertFalse(payload["enumerable"])
         self.assertEqual(payload["source"], "unavailable")
         self.assertEqual(payload["models"], [])
+
+
+    def test_discovers_harness_in_user_local_bin(self) -> None:
+        spec = importlib.util.spec_from_file_location("evaluator_mod", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            local_bin = home / ".local" / "bin"
+            local_bin.mkdir(parents=True)
+            exe = local_bin / "cursor-agent"
+            exe.write_text("#!/bin/sh\nprintf 'mock-cursor 1.0\\n'\n", encoding="utf-8")
+            exe.chmod(0o755)
+            with patch.dict(os.environ, {"HOME": str(home), "PATH": "/usr/bin:/bin"}):
+                resolved, version = evaluator.get_harness_adapter("cursor-agent").resolve(None)
+            self.assertEqual(Path(resolved).resolve(), exe.resolve())
+            self.assertEqual(version, "mock-cursor 1.0")
+
+
+    def test_force_overwrites_an_existing_output_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+            output = root / "run"
+            first = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(output),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+            )
+            self.assertIn(first.returncode, {0, 1}, first.stderr)
+            self.assertTrue((output / "run.json").is_file())
+            blocked = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(output),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+            )
+            self.assertEqual(blocked.returncode, 1, blocked.stderr)
+            self.assertIn("already exists", blocked.stderr)
+            self.assertIn("--force", blocked.stderr)
+            forced = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(output),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+                "--force",
+            )
+            self.assertIn(forced.returncode, {0, 1}, forced.stderr)
+            self.assertTrue((output / "run.json").is_file())
+
+
+    def test_long_invocation_emits_stderr_heartbeats(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+            output = root / "run"
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(EVALUATOR),
+                    "run",
+                    "--skill",
+                    str(skill),
+                    "--tasks",
+                    str(tasks),
+                    "--output",
+                    str(output),
+                    "--harness",
+                    "codex",
+                    "--harness-bin",
+                    str(FAKE_CODEX),
+                    "--model",
+                    "test-model",
+                    "--timeout-seconds",
+                    "60",
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=self.isolated_env(root, {"SIMPLE_FAKE_SLEEP_SECONDS": "16"}),
+            )
+            self.assertIn(result.returncode, {0, 1}, result.stderr)
+            self.assertIn("still running... (elapsed:", result.stderr)
+            self.assertRegex(result.stderr, r"elapsed: 1[5-9]s")
 
