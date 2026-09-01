@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run a paired Codex skill evaluation with retained deterministic evidence."""
+"""Run a paired skill evaluation with retained deterministic evidence."""
 
 from __future__ import annotations
 
@@ -58,13 +58,37 @@ from core.util import (  # noqa: E402
 from harnesses import (  # noqa: E402
     SUPPORTED_HARNESSES,
     get_harness_adapter,
-    prepare_run_codex_home,
     resolve_harness,
 )
-from harnesses.codex import parse_trace as parse_trace  # noqa: E402
+from harnesses.base import reject_unknown_model  # noqa: E402
 
 
 MAX_TASK_BYTES = 4 * 1024 * 1024
+
+
+def require_harness_models(
+    *,
+    harness: str,
+    executable: str,
+    model: str,
+    judge_harness: str,
+    judge_executable: str,
+    judge_model: str,
+) -> None:
+    reject_unknown_model(
+        get_harness_adapter(harness).list_models(executable),
+        model,
+        "model",
+        harness,
+    )
+    if not judge_model:
+        return
+    reject_unknown_model(
+        get_harness_adapter(judge_harness).list_models(judge_executable),
+        judge_model,
+        "judge-model",
+        judge_harness,
+    )
 
 
 def error(message: str) -> None:
@@ -387,7 +411,7 @@ def reject_tasks_inside_skill(skill: Path, tasks_path: Path, promotion: bool) ->
 
 
 def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
-    target_harness = getattr(arguments, "harness", "codex")
+    target_harness = arguments.harness
     if target_harness not in SUPPORTED_HARNESSES:
         supported = ", ".join(sorted(SUPPORTED_HARNESSES))
         raise ValueError(f"unsupported harness {target_harness!r}; supported harnesses are: {supported}")
@@ -422,6 +446,14 @@ def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
     executable, version = resolve_harness(target_harness, arguments.harness_bin)
     judge_executable, judge_version = resolve_harness(
         judge_harness, getattr(arguments, "judge_harness_bin", None) or arguments.harness_bin
+    )
+    require_harness_models(
+        harness=target_harness,
+        executable=executable,
+        model=arguments.model,
+        judge_harness=judge_harness,
+        judge_executable=judge_executable,
+        judge_model=arguments.judge_model,
     )
     paired_trials = len(tasks) * arguments.trials
     target_invocations = paired_trials * 2
@@ -477,11 +509,6 @@ def copy_skill_payload(source: Path, destination: Path) -> None:
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
         target.chmod(path.stat().st_mode & 0o777)
-
-
-def discard_runtime_home(home: Path) -> None:
-    if home.exists():
-        shutil.rmtree(home, ignore_errors=True)
 
 
 def workspace_target(workspace: Path, relative: str) -> Path:
@@ -569,28 +596,15 @@ def grade(task: dict[str, Any], workspace: Path, response: str) -> dict[str, Any
 class HarnessRuntime:
     """Own the shared harness process, workspace, and evidence lifecycle."""
 
-    def __init__(self, codex_directory: Path, configuration: dict[str, Any]) -> None:
-        self.codex_directory = codex_directory
+    def __init__(self, output_dir: Path, configuration: dict[str, Any]) -> None:
+        self.output_dir = output_dir
         self.configuration = dict(configuration)
-        self.target_harness = self.configuration.get("harness") or "codex"
-        self.judge_harness = (
-            self.configuration.get("judge_harness")
-            or self.configuration.get("harness")
-            or "codex"
-        )
+        self.target_harness = self.configuration["harness"]
+        self.judge_harness = self.configuration.get("judge_harness") or self.target_harness
         self.target_adapter = get_harness_adapter(self.target_harness)
         self.judge_adapter = get_harness_adapter(self.judge_harness)
-        base_dir = (
-            codex_directory.parent
-            if codex_directory.name.endswith("-home")
-            else codex_directory
-        )
-        self.target_env, self.target_home = self.target_adapter.prepare_environment(base_dir)
-        self.judge_env, self.judge_home = self.judge_adapter.prepare_environment(base_dir)
-        if self.target_harness == "codex":
-            self.target_env["CODEX_HOME"] = str(codex_directory)
-        if self.judge_harness == "codex":
-            self.judge_env["CODEX_HOME"] = str(codex_directory)
+        self.target_env, self.target_home = self.target_adapter.prepare_environment(output_dir)
+        self.judge_env, self.judge_home = self.judge_adapter.prepare_environment(output_dir)
 
     def cleanup(self) -> None:
         self.target_adapter.cleanup_environment(self.target_home)
@@ -628,7 +642,6 @@ class HarnessRuntime:
         response_name = "response.md" if target_role else "response.txt"
         response_path = invocation_dir / response_name
         environment = os.environ.copy()
-        environment.pop("OPENAI_API_KEY", None)
         path_parts = environment.get("PATH", "").split(os.pathsep)
         clean_parts = [p for p in path_parts if ".pyenv/shims" not in p]
         if "/opt/homebrew/bin" not in clean_parts:
@@ -636,12 +649,7 @@ class HarnessRuntime:
         if "/usr/bin" not in clean_parts:
             clean_parts.append("/usr/bin")
         environment["PATH"] = os.pathsep.join(clean_parts)
-        if adapter.name == "codex":
-            environment.update(
-                {
-                    "HOME": str(invocation_dir / "home"),
-                }
-            )
+        environment.update(adapter.invocation_env(invocation_dir))
         adapter_env = self.target_env if target_role else self.judge_env
         environment.update(adapter_env)
         if target_role:
@@ -668,6 +676,7 @@ class HarnessRuntime:
                     arguments,
                     cwd=workspace,
                     env=environment,
+                    stdin=subprocess.DEVNULL,
                     stdout=trace,
                     stderr=stderr,
                     timeout=self.configuration["timeout_seconds"],
@@ -686,7 +695,12 @@ class HarnessRuntime:
         response_path.write_text(observed["response"], encoding="utf-8")
         reported_model = observed["actual_model"]
         model_matches = reported_model == model if reported_model else None
-        status = "timed_out" if timed_out else ("completed" if exit_code == 0 else "failed")
+        if timed_out:
+            status = "timed_out"
+        elif exit_code == 0 and not (observed.get("failure_message") and not observed.get("response")):
+            status = "completed"
+        else:
+            status = "failed"
         failure_reason = (
             "infrastructure_failed"
             if exit_code != 0 and adapter.is_infrastructure_failure(observed.get("failure_message", ""))
@@ -839,9 +853,6 @@ class HarnessRuntime:
         elif execution["trace_reported_model"] and not execution["model_matches_requested"]:
             result["reason"] = "model_identity_mismatch"
         return result, invocation["response"]
-
-
-CodexRuntime = HarnessRuntime
 
 
 def deterministic_comparison(control: str, treatment: str) -> str:
@@ -1153,10 +1164,8 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"output directory already exists: {output}")
     skill_name = skill.name
     output.mkdir(parents=True)
-    codex_directory = output / "codex-home"
+    runtime = HarnessRuntime(output, configuration)
     try:
-        codex_directory = prepare_run_codex_home(output)
-        runtime = CodexRuntime(codex_directory, configuration)
         write_json(
             output / "config.json",
             {"mode": "live", "configuration": configuration, "counts": plan["counts"]},
@@ -1273,11 +1282,11 @@ def run_live(plan: dict[str, Any]) -> dict[str, Any]:
         write_json(output / "run.json", result)
         return result
     finally:
-        discard_runtime_home(codex_directory)
+        runtime.cleanup()
 
 
 def build_calibration_plan(arguments: argparse.Namespace) -> dict[str, Any]:
-    target_harness = getattr(arguments, "harness", "codex")
+    target_harness = arguments.harness
     if target_harness not in SUPPORTED_HARNESSES:
         supported = ", ".join(sorted(SUPPORTED_HARNESSES))
         raise ValueError(f"unsupported harness {target_harness!r}; supported harnesses are: {supported}")
@@ -1292,6 +1301,14 @@ def build_calibration_plan(arguments: argparse.Namespace) -> dict[str, Any]:
     executable, version = resolve_harness(target_harness, arguments.harness_bin)
     judge_executable, judge_version = resolve_harness(
         judge_harness, getattr(arguments, "judge_harness_bin", None) or arguments.harness_bin
+    )
+    require_harness_models(
+        harness=target_harness,
+        executable=executable,
+        model=arguments.model,
+        judge_harness=judge_harness,
+        judge_executable=judge_executable,
+        judge_model=arguments.judge_model,
     )
     return {
         "valid": True,
@@ -1382,10 +1399,8 @@ def run_calibrate(plan: dict[str, Any]) -> dict[str, Any]:
     if output.exists():
         raise ValueError(f"output directory already exists: {output}")
     output.mkdir(parents=True)
-    codex_directory = output / "codex-home"
+    runtime = HarnessRuntime(output, configuration)
     try:
-        codex_directory = prepare_run_codex_home(output)
-        runtime = HarnessRuntime(codex_directory, configuration)
         write_json(
             output / "config.json",
             {"mode": "calibrate", "configuration": configuration, "counts": plan["counts"]},
@@ -1434,7 +1449,7 @@ def run_calibrate(plan: dict[str, Any]) -> dict[str, Any]:
         write_json(output / "calibration.json", result)
         return result
     finally:
-        discard_runtime_home(codex_directory)
+        runtime.cleanup()
 
 
 def calibration_exit_code(result: dict[str, Any]) -> int:
@@ -1466,6 +1481,7 @@ def healthcheck(arguments: argparse.Namespace) -> int:
             "skill_dir": str(root),
             "commands": [
                 "healthcheck",
+                "models",
                 "run",
                 "calibrate",
                 "prepare-review",
@@ -1475,6 +1491,27 @@ def healthcheck(arguments: argparse.Namespace) -> int:
         }
     )
     return 0 if not missing else 1
+
+
+def list_harness_models(arguments: argparse.Namespace) -> int:
+    harness = arguments.harness
+    if harness not in SUPPORTED_HARNESSES:
+        supported = ", ".join(sorted(SUPPORTED_HARNESSES))
+        raise ValueError(f"unsupported harness {harness!r}; supported harnesses are: {supported}")
+    executable, version = resolve_harness(harness, arguments.harness_bin)
+    listing = get_harness_adapter(harness).list_models(executable)
+    print_json(
+        {
+            "valid": True,
+            "harness": harness,
+            "executable": executable,
+            "harness_version": version,
+            "enumerable": bool(listing.models),
+            "source": listing.source,
+            "models": list(listing.models),
+        }
+    )
+    return 0
 
 
 def run(arguments: argparse.Namespace) -> int:
@@ -1968,6 +2005,12 @@ def parser() -> argparse.ArgumentParser:
     health = commands.add_parser("healthcheck", help="validate the installed skill")
     health.add_argument("--skill-dir")
     health.set_defaults(handler=healthcheck)
+    models_parser = commands.add_parser(
+        "models", help="list model ids a harness can enumerate locally"
+    )
+    models_parser.add_argument("--harness", required=True)
+    models_parser.add_argument("--harness-bin")
+    models_parser.set_defaults(handler=list_harness_models)
     run_parser = commands.add_parser("run", help="plan or run a paired evaluation")
     run_parser.add_argument("--skill", required=True)
     run_parser.add_argument("--tasks")

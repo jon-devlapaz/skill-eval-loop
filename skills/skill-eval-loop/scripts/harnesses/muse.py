@@ -6,12 +6,43 @@ import json
 from pathlib import Path
 from typing import Any
 
-from harnesses.base import BaseHarnessAdapter, TraceResult
+from harnesses.base import BaseHarnessAdapter, ModelListing, TraceResult
+
+
+def muse_catalog_dir() -> Path:
+    return Path.home() / ".local" / "share" / "muse" / "model-catalog"
+
+
+def catalog_model_ids(catalog_dir: Path) -> tuple[str, ...]:
+    if not catalog_dir.is_dir():
+        return ()
+    models: set[str] = set()
+    for path in sorted(catalog_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            continue
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            model_id = row.get("model_id")
+            if isinstance(model_id, str) and model_id.strip():
+                models.add(model_id.strip())
+    return tuple(sorted(models))
 
 
 class MuseAdapter(BaseHarnessAdapter):
     name = "muse"
     default_executable = "muse"
+
+    def list_models(self, executable: str) -> ModelListing:
+        models = catalog_model_ids(muse_catalog_dir())
+        if not models:
+            return ModelListing()
+        return ModelListing(models=models, source="local_catalog")
 
     def build_command(
         self,
