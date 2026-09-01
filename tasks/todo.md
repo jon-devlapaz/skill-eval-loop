@@ -21,3 +21,13 @@
   regressions, usage, and cost are executable and fail closed.
 - [ ] Task 10: Validate a repeated-trial promotion run on an independently
   controlled, human-labeled client holdout (framework workflow implemented).
+
+## Phase 3: Split the evaluator along existing owners
+
+Extract landed. This is not the finished architecture: `skill_eval_loop.py`
+remains ~2k lines, and typed load models still `.as_dict()` back to dicts
+at the boundary. Further split only when a later change needs that owner.
+
+- [x] PR A: Extract `scripts/harnesses/` (`TraceResult`, `noop_env`/`isolated_home`, adapters).
+- [x] PR B: Extract `core/judging.py` (`JudgeGate`, unify unknown judgment / infra failure).
+- [x] PR C: Typed `Task`/`Rubric`/`ReviewPacket` boundaries; split `tests/` by domain.
