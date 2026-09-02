@@ -1,8 +1,8 @@
 # RFC: Evaluator UX Ergonomics & Multi-Harness Operational Polish
 
-**Status**: Implemented (2026-09-01)  
-**Date**: 2026-08-31  
-**Author**: Antigravity Agent  
+**Status**: Implemented (2026-09-01)
+**Date**: 2026-08-31
+**Author**: Antigravity Agent
 **Context**: Post-Phase 2 dogfooding findings against live agent CLIs (`cursor-agent`, `muse`, `codex`)
 
 Implemented against the 2026-09-01 harness-agnostic runner. Deviations from the
@@ -82,7 +82,7 @@ def discover_executable(executable_name: str) -> str:
     found = shutil.which(executable_name)
     if found:
         return found
-    
+
     # 2. Known standard user/system bin directories
     candidates = [
         Path.home() / ".local" / "bin",
@@ -99,7 +99,7 @@ def discover_executable(executable_name: str) -> str:
         target = directory / executable_name
         if target.is_file() and os.access(target, os.X_OK):
             return str(target)
-            
+
     raise ValueError(
         f"executable {executable_name!r} not found in PATH or standard binary locations (~/.local/bin, /opt/homebrew/bin, etc.). "
         f"Please supply --harness-bin /path/to/{executable_name}"

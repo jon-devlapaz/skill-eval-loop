@@ -212,4 +212,3 @@ class ReviewTests(EvaluatorTestCase):
             tampered = self.run_cli(*arguments)
             self.assertEqual(tampered.returncode, 1)
             self.assertIn("prompt hash does not match the manifest", tampered.stderr)
-

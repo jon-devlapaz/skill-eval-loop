@@ -459,4 +459,3 @@ class CalibrationTests(EvaluatorTestCase):
             )
             self.assertEqual(result.returncode, 2, result.stderr)
             self.assertIn("primary_diagnosis", result.stderr)
-

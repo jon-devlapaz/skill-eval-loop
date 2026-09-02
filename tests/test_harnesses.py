@@ -697,7 +697,7 @@ class HarnessTests(EvaluatorTestCase):
             skill = self.make_skill(root)
             tasks = root / "tasks.jsonl"
             tasks.write_text(json.dumps({"id": "t1", "prompt": "say hello", "graders": [{"type": "response_not_empty"}]}) + "\n", encoding="utf-8")
-            
+
             runner_script = root / "custom_runner.py"
             runner_script.write_text(
                 '#!/usr/bin/env python3\n'
@@ -1008,4 +1008,3 @@ class HarnessTests(EvaluatorTestCase):
             self.assertIn(result.returncode, {0, 1}, result.stderr)
             self.assertIn("still running... (elapsed:", result.stderr)
             self.assertRegex(result.stderr, r"elapsed: 1[5-9]s")
-
