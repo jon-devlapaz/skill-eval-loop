@@ -12,21 +12,38 @@ Reports are derived from retained evidence.
 
 ## Install
 
-Install with Tink or copy only `skills/skill-eval-loop/` into an Agent Skills
-directory.
+Python 3 is required. No Python package install. The public launcher is
+`scripts/skill-eval-loop` inside the skill directory.
+
+From this repository:
 
 ```bash
-tink skill add jon-devlapaz/skill-eval-loop --skill skill-eval-loop
-tink skill check
+git clone https://github.com/jon-devlapaz/skill-eval-loop.git
+cd skill-eval-loop
+EVALUATOR="$PWD/skills/skill-eval-loop/scripts/skill-eval-loop"
+"$EVALUATOR" healthcheck
+"$EVALUATOR" models --harness pi
 ```
 
-The public launcher requires Python 3 and no package installation:
+Into another project with Tink. If `tink` is missing:
 
 ```bash
+curl -fsSL https://raw.githubusercontent.com/jon-devlapaz/tink/main/install.sh | sh
+```
+
+Then in that project:
+
+```bash
+tink init --no-tink-skills --no-manage-tink
+tink skill add jon-devlapaz/skill-eval-loop --skill skill-eval-loop
+tink skill check
 EVALUATOR="$PWD/.agents/skills/skill-eval-loop/scripts/skill-eval-loop"
 "$EVALUATOR" healthcheck
 "$EVALUATOR" models --harness pi
 ```
+
+You can also copy only `skills/skill-eval-loop/` into an Agent Skills directory
+and point `EVALUATOR` at that copy's `scripts/skill-eval-loop`.
 
 Copy `--model` and `--judge-model` from that harness's listing. If the listing
 is non-empty, `run` and `calibrate` reject ids that are not on it. An empty
@@ -74,8 +91,12 @@ The checked-in development benchmark evaluates Vercel's
 - tasks: `tasks/react-best-practices-v1.jsonl`
 - expected evaluator payload SHA-256:
   `5cbdbd8d9acc6913b8f4e0c7151830e88417872421a5975b86fa4b3eba5c36d3`
-- expected task SHA-256:
+- expected v1 task SHA-256:
   `621a609cfcdb82756ebe6870a0fad16c6ef12f6186f6c75abb213195b4333c92`
+
+That task SHA is only for `react-best-practices-v1.jsonl`. A v2 dry-run prints
+a different `tasks_sha256`; compare it to the v2 hash below, not this one. The
+payload hash is shared: it is the pinned Vercel skill, not the task file.
 
 Fetch that exact revision into a controlled local directory and pass the
 absolute skill subpath plus the checked-in task file to `run --dry-run`. Reject
@@ -219,11 +240,12 @@ and fake harnesses. It makes no live model calls, receives no model credentials,
 and uploads no evaluation evidence. Authorized operators run live evaluations
 locally; humans inspect the retained evidence and own promotion decisions.
 
-Run the Python test suite and package healthcheck:
+Run the Python test suite and the same public `healthcheck` subcommand as
+Install (`healthcheck.sh` is a wrapper around that launcher):
 
 ```bash
 python3 -m unittest discover -s tests -v
-skills/skill-eval-loop/scripts/healthcheck.sh
+"$PWD/skills/skill-eval-loop/scripts/skill-eval-loop" healthcheck
 ```
 
 ## License

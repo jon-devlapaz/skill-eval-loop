@@ -15,9 +15,12 @@ Keep raw responses and traces as evidence. Treat reports as derived views.
 Use the installed skill's public launcher. It requires only Python 3.
 
 ```bash
-EVALUATOR=/absolute/path/to/skill-eval-loop/scripts/skill-eval-loop
+EVALUATOR=/absolute/path/to/skills/skill-eval-loop/scripts/skill-eval-loop
 "$EVALUATOR" healthcheck
 ```
+
+After Tink install, that launcher is
+`.agents/skills/skill-eval-loop/scripts/skill-eval-loop` in the project.
 
 List model ids a harness can enumerate before choosing `--model` or
 `--judge-model`. If the listing is non-empty, `run` and `calibrate` dry-runs
