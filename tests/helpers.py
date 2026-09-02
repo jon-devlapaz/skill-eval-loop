@@ -10,6 +10,10 @@ ROOT = Path(__file__).resolve().parents[1]
 EVALUATOR = ROOT / "skills" / "skill-eval-loop" / "scripts" / "skill_eval_loop.py"
 LAUNCHER = ROOT / "skills" / "skill-eval-loop" / "scripts" / "skill-eval-loop"
 FAKE_CODEX = ROOT / "tests" / "fixtures" / "simple-fake-codex"
+FAKE_MUSE = ROOT / "tests" / "fixtures" / "simple-fake-muse"
+FAKE_CURSOR_AGENT = ROOT / "tests" / "fixtures" / "simple-fake-cursor-agent"
+FAKE_PI = ROOT / "tests" / "fixtures" / "simple-fake-pi"
+FAKE_AGY = ROOT / "tests" / "fixtures" / "simple-fake-agy"
 CALIBRATION_FIXTURES = ROOT / "tests" / "fixtures" / "calibration" / "v1.json"
 
 

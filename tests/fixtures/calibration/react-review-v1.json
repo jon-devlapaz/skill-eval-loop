@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "prompt": "Review this React Server Component page for correctness under concurrent requests. Do not edit files. Name the highest-impact issue, show a concrete replacement, and do not invent measurements for this codebase.\n\n```tsx\nlet currentUser: User | null = null\n\nexport default async function Page() {\n  currentUser = await auth()\n  return <Dashboard />\n}\n\nasync function Dashboard() {\n  return <div>{currentUser?.name}</div>\n}\n```\n\nContext: Node App Router server. Overlapping requests are expected. No traces were provided.",
+  "minimum_agreements": 3,
+  "dimensions": [
+    {
+      "name": "primary_diagnosis",
+      "levels": [
+        {
+          "name": "not_met",
+          "description": "Misses the main issue, invents a different defect, or treats a negative case as broken."
+        },
+        {
+          "name": "met",
+          "description": "Identifies the actual issue, or correctly states that no change is justified from the supplied evidence."
+        }
+      ]
+    },
+    {
+      "name": "actionable_fix",
+      "levels": [
+        {
+          "name": "not_met",
+          "description": "Gives no coherent fix, an invalid fix, or a required change when none is justified."
+        },
+        {
+          "name": "met",
+          "description": "Shows a valid replacement, or explicitly recommends no code change when the snippet is already correct."
+        }
+      ]
+    },
+    {
+      "name": "grounded_claims",
+      "levels": [
+        {
+          "name": "not_met",
+          "description": "Presents unprovided measurements as facts about this app, or invents a correctness bug that the snippet does not contain."
+        },
+        {
+          "name": "met",
+          "description": "Does not invent app-specific measurements or false bugs; typical published ranges may be labeled as typical, not measured here."
+        }
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "id": "known-better",
+      "better": "currentUser is mutable module state. Concurrent RSC renders share that binding, so one request can overwrite another request's user before Dashboard reads it. Pass the user from Page into Dashboard (or another request-local API). I have no trace for this server, so I am not claiming a measured leak rate.",
+      "other": "This is idiomatic. Keep the module singleton. Wrap Dashboard in memo and this will cut 180ms TTFB on this page. Also the missing useEffect is a hydration bug.",
+      "human_winner": "better",
+      "rationale": "Better names the cross-request module-state race and a request-local fix without invented timings. Other denies the bug, invents TTFB and hydration defects, and recommends memo."
+    },
+    {
+      "id": "known-worse",
+      "better": "Do not store the authenticated user in a module-level let. Pass user as a prop from Page to Dashboard so each render tree keeps its own value. No latency number is available for this snippet.",
+      "other": "No correctness issue. Module-level caches are recommended. Add React.memo to Dashboard and a 200ms debounce on auth() for 15-70% faster cold starts on this route.",
+      "human_winner": "better",
+      "rationale": "Worse denies the race, recommends memo/debounce, and treats a percentage speedup as measured on this route."
+    },
+    {
+      "id": "tie",
+      "better": "Highest-impact issue: mutable module-scoped currentUser can leak or race across concurrent requests. Fix by passing user through props. No measured incident rate is provided.",
+      "other": "Module-level currentUser is process-wide, not request-local. Pass the auth() result into Dashboard instead of reading a shared let. I will not invent a TTFB number.",
+      "human_winner": "tie",
+      "rationale": "Both identify the cross-request module state bug, recommend passing user through the tree, and avoid invented measurements."
+    }
+  ]
+}

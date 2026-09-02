@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import shutil
 from typing import Any
 
-from harnesses.base import BaseHarnessAdapter, TraceResult
+from harnesses.base import BaseHarnessAdapter, TraceResult, discover_executable
 
 
 class ScriptAdapter(BaseHarnessAdapter):
@@ -17,13 +16,9 @@ class ScriptAdapter(BaseHarnessAdapter):
     def resolve(self, executable: str | None) -> tuple[str, str]:
         if not executable:
             raise ValueError("harness-bin is required for script harness")
-        resolved = shutil.which(executable)
+        resolved = discover_executable(executable)
         if resolved is None:
-            path = Path(executable).resolve()
-            if path.is_file():
-                resolved = str(path)
-            else:
-                raise ValueError(f"script executable not found: {executable}")
+            raise ValueError(f"script executable not found: {executable}")
         return resolved, "custom-script 1.0"
 
     def build_command(

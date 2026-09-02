@@ -22,15 +22,16 @@ Changing any component creates a different evaluation.
 
 A run requires:
 
-- an absolute skill directory;
-- either an absolute newline-delimited JSON task file or the target-owned
+- a skill directory (CLI paths may be relative or `~/`; retained evidence stores
+  the canonical absolute path);
+- either a newline-delimited JSON task file or the target-owned
   `evals/tasks.jsonl` file;
 - a supported harness and its resolved executable;
 - an exact target model identifier;
 - a different exact judge model identifier when a task uses a rubric;
 - a positive trial count;
-- a positive timeout;
-- an absolute output directory;
+- a positive timeout (CLI default 300 seconds);
+- an output directory (same path-resolution rule as the skill path);
 - an exact judge model when any task uses a rubric grader.
 
 The retained configuration also records the harness version, hashes of the

@@ -5,16 +5,29 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path, PurePath
+import shutil
 import sys
 import unicodedata
 from typing import Any
 
 
-def absolute_path(value: str, label: str) -> Path:
-    path = Path(value)
-    if not path.is_absolute():
-        raise ValueError(f"{label} path must be absolute")
-    return path
+def user_path(value: str | None, label: str, *, must_exist: bool = False) -> Path:
+    if value is None or not str(value).strip():
+        raise ValueError(f"{label} is required")
+    resolved = Path(value).expanduser().resolve()
+    if must_exist and not resolved.exists():
+        raise ValueError(f"{label} path does not exist: {value}")
+    return resolved
+
+
+def prepare_output_directory(output: Path, force: bool) -> None:
+    if not output.exists():
+        return
+    if not force:
+        raise ValueError(
+            f"output directory already exists: {output}. Use --force to overwrite."
+        )
+    shutil.rmtree(output)
 
 
 def required_string(value: Any, label: str) -> str:

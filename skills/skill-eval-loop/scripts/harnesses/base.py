@@ -3,10 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
 import shutil
 import subprocess
 from typing import Any
+
+
+@dataclass(frozen=True)
+class ModelListing:
+    models: tuple[str, ...] = ()
+    source: str = "unavailable"
 
 
 INFRASTRUCTURE_FAILURE_MARKERS = (
@@ -52,6 +59,38 @@ def is_infrastructure_failure(message: str) -> bool:
     return any(marker in lowered for marker in INFRASTRUCTURE_FAILURE_MARKERS)
 
 
+def standard_bin_dirs() -> list[Path]:
+    return [
+        Path.home() / ".local" / "bin",
+        Path.home() / ".cargo" / "bin",
+        Path.home() / ".bun" / "bin",
+        Path.home() / ".npm-global" / "bin",
+        Path("/opt/homebrew/bin"),
+        Path("/opt/homebrew/sbin"),
+        Path("/usr/local/bin"),
+        Path("/usr/bin"),
+        Path("/bin"),
+    ]
+
+
+def discover_executable(executable_name: str) -> str | None:
+    expanded = Path(executable_name).expanduser()
+    looks_like_path = expanded.is_absolute() or os.sep in executable_name or executable_name.startswith("~")
+    if looks_like_path:
+        resolved = expanded.resolve()
+        if resolved.is_file() and os.access(resolved, os.X_OK):
+            return str(resolved)
+        return shutil.which(executable_name)
+    found = shutil.which(executable_name)
+    if found:
+        return found
+    for directory in standard_bin_dirs():
+        target = directory / executable_name
+        if target.is_file() and os.access(target, os.X_OK):
+            return str(target)
+    return None
+
+
 class BaseHarnessAdapter:
     name: str = ""
     default_executable: str = ""
@@ -60,13 +99,13 @@ class BaseHarnessAdapter:
         target = executable or self.default_executable
         if not target:
             raise ValueError(f"executable is required for harness {self.name!r}")
-        resolved = shutil.which(target)
+        resolved = discover_executable(target)
         if resolved is None:
-            path = Path(target).resolve()
-            if path.is_file():
-                resolved = str(path)
-            else:
-                raise ValueError(f"{self.name} executable not found: {target}")
+            raise ValueError(
+                f"{self.name} executable not found: {target}. "
+                f"Searched PATH and standard binary locations (~/.local/bin, /opt/homebrew/bin). "
+                f"Supply --harness-bin /path/to/{target}"
+            )
         try:
             version = subprocess.run(
                 [resolved, "--version"], text=True, capture_output=True, check=True
@@ -79,6 +118,9 @@ class BaseHarnessAdapter:
 
     def prepare_environment(self, output_dir: Path) -> tuple[dict[str, str], Path | None]:
         return noop_env()
+
+    def invocation_env(self, invocation_dir: Path) -> dict[str, str]:
+        return {}
 
     def cleanup_environment(self, home_dir: Path | None) -> None:
         if home_dir is not None and home_dir.exists():
@@ -108,3 +150,18 @@ class BaseHarnessAdapter:
 
     def is_infrastructure_failure(self, message: str) -> bool:
         return is_infrastructure_failure(message)
+
+    def list_models(self, executable: str) -> ModelListing:
+        return ModelListing()
+
+
+def reject_unknown_model(listing: ModelListing, model: str, label: str, harness: str) -> None:
+    if not listing.models:
+        return
+    if model in listing.models:
+        return
+    available = ", ".join(listing.models)
+    raise ValueError(
+        f"{label} {model!r} is not available on harness {harness!r}; "
+        f"available models ({listing.source}): {available}"
+    )

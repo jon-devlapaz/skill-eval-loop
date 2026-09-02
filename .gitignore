@@ -1,7 +1,13 @@
+.DS_Store
 .agents/
-.eval-runs/
 .pytest_cache/
 .ruff_cache/
 __pycache__/
 *.py[cod]
 node_modules/
+
+# Live evaluation artifacts. Inspect AI ignores logs/; Cursor agent-trace
+# ignores .agent-trace/. Keep harness traces and Cursor chat DBs local.
+.eval-output/*
+!.eval-output/README.md
+.eval-runs/

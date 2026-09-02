@@ -10,7 +10,11 @@ from unittest.mock import patch
 
 from helpers import (
     EVALUATOR,
+    FAKE_AGY,
     FAKE_CODEX,
+    FAKE_CURSOR_AGENT,
+    FAKE_MUSE,
+    FAKE_PI,
     LAUNCHER,
     ROOT,
     EvaluatorTestCase,
@@ -24,7 +28,7 @@ class HarnessTests(EvaluatorTestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             json.loads(result.stdout)["commands"],
-            ["healthcheck", "run", "calibrate", "prepare-review", "finalize-review"],
+            ["healthcheck", "models", "run", "calibrate", "prepare-review", "finalize-review"],
         )
 
 
@@ -230,7 +234,7 @@ class HarnessTests(EvaluatorTestCase):
                         original_copyfile = evaluator.shutil.copyfile
 
                         def fail_task_copy(source: Path, destination: Path) -> None:
-                            if Path(destination) == output / "tasks.jsonl":
+                            if Path(destination).resolve() == (output / "tasks.jsonl").resolve():
                                 raise OSError("task copy failed")
                             original_copyfile(source, destination)
 
@@ -287,7 +291,7 @@ class HarnessTests(EvaluatorTestCase):
             self.assertTrue((output / "task-choice" / "trial-001" / "control" / "trace.jsonl").is_file())
 
 
-    def test_all_codex_roles_use_cleaned_workspaces_outside_retained_output(self) -> None:
+    def test_all_harness_roles_use_cleaned_workspaces_outside_retained_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             cwd_log = root / "role-cwds.txt"
@@ -309,7 +313,7 @@ class HarnessTests(EvaluatorTestCase):
             self.assertTrue(all(not workspace.exists() for workspace in workspaces))
 
 
-    def test_codex_runtime_is_the_shared_target_and_judge_test_surface(self) -> None:
+    def test_harness_runtime_is_the_shared_target_and_judge_test_surface(self) -> None:
         spec = importlib.util.spec_from_file_location("skill_eval_loop_runtime", EVALUATOR)
         self.assertIsNotNone(spec)
         self.assertIsNotNone(spec.loader)
@@ -320,12 +324,13 @@ class HarnessTests(EvaluatorTestCase):
             root = Path(temporary)
             skill = self.make_skill(root)
             pair_dir = root / "retained" / "task-choice" / "trial-001"
-            codex_home = root / "codex-home"
-            codex_home.mkdir()
+            output = root / "run-output"
+            output.mkdir()
             cwd_log = root / "runtime-cwds.txt"
-            runtime = evaluator.CodexRuntime(
-                codex_home,
+            runtime = evaluator.HarnessRuntime(
+                output,
                 {
+                    "harness": "codex",
                     "harness_executable": str(FAKE_CODEX),
                     "model": "runner-model",
                     "judge_model": "judge-model",
@@ -404,7 +409,9 @@ class HarnessTests(EvaluatorTestCase):
                 encoding="utf-8",
             )
 
-            observed = evaluator.parse_trace(trace, skill_name="target-skill")
+            observed = evaluator.get_harness_adapter("codex").parse_trace(
+                trace, trace, skill_name="target-skill"
+            )
 
         self.assertTrue(observed["skill_accessed"])
 
@@ -440,7 +447,9 @@ class HarnessTests(EvaluatorTestCase):
                 encoding="utf-8",
             )
 
-            observed = evaluator.parse_trace(trace, skill_name="target-skill")
+            observed = evaluator.get_harness_adapter("codex").parse_trace(
+                trace, trace, skill_name="target-skill"
+            )
 
         self.assertTrue(observed["skill_accessed"])
 
@@ -469,9 +478,76 @@ class HarnessTests(EvaluatorTestCase):
                 encoding="utf-8",
             )
 
-            observed = evaluator.parse_trace(trace, skill_name="target-skill")
+            observed = evaluator.get_harness_adapter("codex").parse_trace(
+                trace, trace, skill_name="target-skill"
+            )
 
         self.assertFalse(observed["skill_accessed"])
+
+    def test_claude_json_error_is_a_failure_not_a_response(self) -> None:
+        spec = importlib.util.spec_from_file_location("evaluator_mod", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            trace = Path(temporary) / "trace.jsonl"
+            trace.write_text(
+                json.dumps(
+                    {
+                        "is_error": True,
+                        "result": "Not logged in · Please run /login",
+                        "type": "result",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            observed = evaluator.get_harness_adapter("claude").parse_trace(
+                trace, trace, skill_name="target-skill"
+            )
+        self.assertEqual(observed["response"], "")
+        self.assertIn("Not logged in", observed["failure_message"])
+
+    def test_hermes_copies_host_config_into_the_run_home(self) -> None:
+        spec = importlib.util.spec_from_file_location("evaluator_mod", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            host = root / "user-home" / ".hermes"
+            host.mkdir(parents=True)
+            (host / "config.yaml").write_text("model: auto\n", encoding="utf-8")
+            (host / ".env").write_text("FREELLM_API_KEY=test-key\n", encoding="utf-8")
+            output = root / "run-output"
+            with patch.dict(os.environ, {"HOME": str(root / "user-home")}):
+                env, home = evaluator.get_harness_adapter("hermes").prepare_environment(output)
+            self.assertEqual(env["HERMES_HOME"], str(home))
+            self.assertEqual((home / "config.yaml").read_text(encoding="utf-8"), "model: auto\n")
+            self.assertEqual((home / ".env").read_text(encoding="utf-8"), "FREELLM_API_KEY=test-key\n")
+
+    def test_hermes_parse_drops_scanner_warnings(self) -> None:
+        spec = importlib.util.spec_from_file_location("evaluator_mod", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            trace = Path(temporary) / "trace.jsonl"
+            trace.write_text(
+                "⚠ tirith security scanner enabled but not available\n"
+                "session_id: 20260901_110244_f07155\n"
+                "Blue\n",
+                encoding="utf-8",
+            )
+            observed = evaluator.get_harness_adapter("hermes").parse_trace(
+                trace, trace, skill_name="target-skill"
+            )
+        self.assertEqual(observed["response"], "Blue")
 
 
     def test_unsupported_harness_rejected_with_supported_list(self) -> None:
@@ -505,12 +581,102 @@ class HarnessTests(EvaluatorTestCase):
         self.assertIsNotNone(spec.loader)
         evaluator = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(evaluator)
-        
-        expected_harnesses = ["antigravity", "claude", "codex", "cursor-agent", "hermes", "muse", "pi", "script"]
+
+        expected_harnesses = [
+            "antigravity",
+            "claude",
+            "codex",
+            "cursor-agent",
+            "hermes",
+            "muse",
+            "pi",
+            "script",
+        ]
         self.assertEqual(sorted(evaluator.SUPPORTED_HARNESSES), expected_harnesses)
-        
+
         with tempfile.TemporaryDirectory() as temporary:
             ws = Path(temporary)
+            expected_commands = {
+                "antigravity": [
+                    "/bin/antigravity",
+                    "--model",
+                    "test-model",
+                    "--print",
+                    "Hello world",
+                ],
+                "claude": [
+                    "/bin/claude",
+                    "--print",
+                    "--output-format",
+                    "json",
+                    "--model",
+                    "test-model",
+                    "Hello world",
+                ],
+                "codex": [
+                    "/bin/codex",
+                    "exec",
+                    "--json",
+                    "--ephemeral",
+                    "--skip-git-repo-check",
+                    "--ignore-user-config",
+                    "--ignore-rules",
+                    "--sandbox",
+                    "read-only",
+                    "--model",
+                    "test-model",
+                    "Hello world",
+                ],
+                "cursor-agent": [
+                    "/bin/cursor-agent",
+                    "--print",
+                    "--force",
+                    "--trust",
+                    "--output-format",
+                    "json",
+                    "--model",
+                    "test-model",
+                    "Hello world",
+                ],
+                "hermes": [
+                    "/bin/hermes",
+                    "chat",
+                    "-Q",
+                    "-q",
+                    "Hello world",
+                    "--model",
+                    "test-model",
+                ],
+                "muse": [
+                    "/bin/muse",
+                    "exec",
+                    "--json",
+                    "--workspace",
+                    str(ws),
+                    "--trust-workspace",
+                    "--disable-approval",
+                    "--model",
+                    "test-model",
+                    "Hello world",
+                ],
+                "pi": [
+                    "/bin/pi",
+                    "--print",
+                    "--model",
+                    "test-model",
+                    "--",
+                    "Hello world",
+                ],
+                "script": [
+                    "/bin/script",
+                    "--model",
+                    "test-model",
+                    "--role",
+                    "treatment",
+                    "--prompt",
+                    "Hello world",
+                ],
+            }
             for harness_name in expected_harnesses:
                 adapter = evaluator.get_harness_adapter(harness_name)
                 cmd = adapter.build_command(
@@ -522,9 +688,7 @@ class HarnessTests(EvaluatorTestCase):
                     timeout_seconds=30,
                     skill_name="test-skill",
                 )
-                self.assertIsInstance(cmd, list)
-                self.assertTrue(len(cmd) >= 2)
-                self.assertIn("test-model", cmd)
+                self.assertEqual(cmd, expected_commands[harness_name])
 
 
     def test_script_harness_live_execution(self) -> None:
@@ -574,4 +738,274 @@ class HarnessTests(EvaluatorTestCase):
             treatment_response = (output / "task-t1" / "trial-001" / "treatment" / "response.md").read_text(encoding="utf-8")
             self.assertEqual(treatment_response, "Hello from custom script runner!")
             self.assertTrue(pair_report["activation"]["trace_skill_read"])
+            self.assertFalse((output / "codex-home").exists())
+
+    def _write_muse_catalog(self, root: Path) -> None:
+        catalog = root / "user-home" / ".local" / "share" / "muse" / "model-catalog"
+        catalog.mkdir(parents=True)
+        (catalog / "meta.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "rows": [
+                        {"model_id": "muse-spark-1.2"},
+                        {"model_id": "muse-spark-1.2-contributor"},
+                    ],
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    def test_models_lists_muse_catalog_from_the_isolated_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_muse_catalog(root)
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(EVALUATOR),
+                    "models",
+                    "--harness",
+                    "muse",
+                    "--harness-bin",
+                    str(FAKE_MUSE),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=self.isolated_env(root),
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            payload = json.loads(result.stdout)
+            self.assertTrue(payload["enumerable"])
+            self.assertEqual(payload["source"], "local_catalog")
+            self.assertEqual(
+                payload["models"],
+                ["muse-spark-1.2", "muse-spark-1.2-contributor"],
+            )
+
+    def test_dry_run_rejects_a_muse_model_missing_from_the_catalog(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._write_muse_catalog(root)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(EVALUATOR),
+                    "run",
+                    "--skill",
+                    str(skill),
+                    "--tasks",
+                    str(tasks),
+                    "--output",
+                    str(root / "run"),
+                    "--harness",
+                    "muse",
+                    "--harness-bin",
+                    str(FAKE_MUSE),
+                    "--model",
+                    "gpt-5.6-sol-medium",
+                    "--dry-run",
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=self.isolated_env(root),
+            )
+            self.assertEqual(result.returncode, 1, result.stderr)
+            self.assertIn("gpt-5.6-sol-medium", result.stderr)
+            self.assertIn("muse-spark-1.2", result.stderr)
+
+    def test_models_lists_cursor_agent_cli_ids(self) -> None:
+        result = self.run_cli(
+            "models",
+            "--harness",
+            "cursor-agent",
+            "--harness-bin",
+            str(FAKE_CURSOR_AGENT),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["source"], "cli")
+        self.assertEqual(payload["models"], ["claude-sonnet-5-medium", "gpt-5.6-sol-medium"])
+
+    def test_models_lists_pi_cli_ids(self) -> None:
+        result = self.run_cli(
+            "models",
+            "--harness",
+            "pi",
+            "--harness-bin",
+            str(FAKE_PI),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["source"], "cli")
+        self.assertEqual(
+            payload["models"],
+            ["google/gemini-2.5-flash", "openai-codex/gpt-5.6-sol"],
+        )
+
+    def test_models_lists_antigravity_cli_ids(self) -> None:
+        result = self.run_cli(
+            "models",
+            "--harness",
+            "antigravity",
+            "--harness-bin",
+            str(FAKE_AGY),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual(payload["source"], "cli")
+        self.assertEqual(
+            payload["models"],
+            ["claude-sonnet-4-6", "gemini-3.7-flash-high"],
+        )
+
+    def test_models_empty_listing_when_the_cli_cannot_enumerate(self) -> None:
+        result = self.run_cli(
+            "models",
+            "--harness",
+            "claude",
+            "--harness-bin",
+            str(FAKE_CODEX),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertFalse(payload["enumerable"])
+        self.assertEqual(payload["source"], "unavailable")
+        self.assertEqual(payload["models"], [])
+
+
+    def test_discovers_harness_in_user_local_bin(self) -> None:
+        spec = importlib.util.spec_from_file_location("evaluator_mod", EVALUATOR)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        evaluator = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(evaluator)
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary) / "home"
+            local_bin = home / ".local" / "bin"
+            local_bin.mkdir(parents=True)
+            exe = local_bin / "cursor-agent"
+            exe.write_text("#!/bin/sh\nprintf 'mock-cursor 1.0\\n'\n", encoding="utf-8")
+            exe.chmod(0o755)
+            with patch.dict(os.environ, {"HOME": str(home), "PATH": "/usr/bin:/bin"}):
+                resolved, version = evaluator.get_harness_adapter("cursor-agent").resolve(None)
+            self.assertEqual(Path(resolved).resolve(), exe.resolve())
+            self.assertEqual(version, "mock-cursor 1.0")
+
+
+    def test_force_overwrites_an_existing_output_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+            output = root / "run"
+            first = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(output),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+            )
+            self.assertIn(first.returncode, {0, 1}, first.stderr)
+            self.assertTrue((output / "run.json").is_file())
+            blocked = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(output),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+            )
+            self.assertEqual(blocked.returncode, 1, blocked.stderr)
+            self.assertIn("already exists", blocked.stderr)
+            self.assertIn("--force", blocked.stderr)
+            forced = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(output),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+                "--force",
+            )
+            self.assertIn(forced.returncode, {0, 1}, forced.stderr)
+            self.assertTrue((output / "run.json").is_file())
+
+
+    def test_long_invocation_emits_stderr_heartbeats(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                '{"id":"choice","prompt":"Choose Blue.","graders":[{"type":"regex","pattern":"Blue"}]}\n',
+                encoding="utf-8",
+            )
+            output = root / "run"
+            result = subprocess.run(
+                [
+                    "python3",
+                    str(EVALUATOR),
+                    "run",
+                    "--skill",
+                    str(skill),
+                    "--tasks",
+                    str(tasks),
+                    "--output",
+                    str(output),
+                    "--harness",
+                    "codex",
+                    "--harness-bin",
+                    str(FAKE_CODEX),
+                    "--model",
+                    "test-model",
+                    "--timeout-seconds",
+                    "60",
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+                env=self.isolated_env(root, {"SIMPLE_FAKE_SLEEP_SECONDS": "16"}),
+            )
+            self.assertIn(result.returncode, {0, 1}, result.stderr)
+            self.assertIn("still running... (elapsed:", result.stderr)
+            self.assertRegex(result.stderr, r"elapsed: 1[5-9]s")
 

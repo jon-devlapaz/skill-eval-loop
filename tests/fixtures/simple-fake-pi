@@ -1,0 +1,18 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = "--version" ]; then
+  printf 'simple-fake-pi 1.0\n'
+  exit 0
+fi
+
+if [ "${1:-}" = "--list-models" ]; then
+  printf '%s\n' \
+    "provider      model" \
+    "openai-codex  gpt-5.6-sol" \
+    "google        gemini-2.5-flash"
+  exit 0
+fi
+
+printf 'unexpected invocation\n' >&2
+exit 9
