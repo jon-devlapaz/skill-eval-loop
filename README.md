@@ -80,12 +80,45 @@ The checked-in development benchmark evaluates Vercel's
 Fetch that exact revision into a controlled local directory and pass the
 absolute skill subpath plus the checked-in task file to `run --dry-run`. Reject
 the plan if the revision or payload hash differs. The public task file is
-development evidence, not a secret client holdout.
+development evidence, not a secret client holdout. The 2026-09-01 Cursor run
+showed v1 is saturated for `claude-sonnet-5-medium`: both conditions already
+met the rubric.
+
+### Quality dataset (v2)
+
+Use `tasks/react-best-practices-v2.jsonl` with
+`tests/fixtures/calibration/react-review-v1.json`. Eight review-in-prompt
+examples share binary dimensions `primary_diagnosis`, `actionable_fix`, and
+`grounded_claims`. Bound calibration must cover every task rubric dimension
+name. Run at least 3 trials on the same harness pair. This remains a
+development experiment until humans review a sample of transcripts.
+
+- expected v2 task SHA-256:
+  `9c3a558691d2507ccb332d8f20d25422f52f4ab9602b479c0e2e0c3a498e959b`
+- expected react-review calibration fixture SHA-256:
+  `5b093a444351abe683dbe3177f0c1ef93f161e02c466a94b9b0376de599cfd06`
+
+The 2026-09-01 same-harness Cursor v2 run
+(`.eval-output/react-best-practices-v2-cursor/`) used the previous task SHA
+and is retained as provisional evidence. `memo-default-callback` was then
+rewritten so the gold label matches React memo semantics: Header's inline
+default is passed into a memoized child.
+
+The 2026-09-02 bound independent run
+(`.eval-output/react-best-practices-v2-cursor-agy-judge/`) used that SHA,
+`claude-sonnet-5-medium` on `cursor-agent`, and `gemini-3.6-flash-high` on
+`antigravity` after a 3/3 accepted same-harness calibration of that judge id.
+It exited 0 with `quality_status: independent`. Across 24 paired trials,
+`quality_outcome` was control 15, tie 4, treatment 2, inconsistent 3.
+Per-output binary scores were at ceiling for both conditions
+(`primary_diagnosis` and `grounded_claims` 24/24; `actionable_fix` control
+23/24, treatment 24/24). Pairwise leftover scoring is not a skill win. This
+is not a promotion claim.
 
 For rubric tasks, also pass `--judge-model` with a different exact model
-identifier and `--calibration /absolute/path/to/calibration.json` from an
-accepted calibrate run on that same harness pair. The runner judges each
-condition only after deterministic gates pass. A valid same-harness judgment
+identifier and `--calibration` from an accepted calibrate run on that same
+harness pair. The runner judges each condition only after deterministic gates
+pass. Color-choice fixtures cannot bind v2. A valid same-harness judgment
 is `provisional_non_independent`; a timeout, failed gate, malformed response, or
 identity mismatch is `unknown`. A missing trace-reported model is unattested,
 not a quality unknown. Omitting `--calibration` is allowed, but a rubric run

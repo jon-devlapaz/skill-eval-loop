@@ -363,3 +363,100 @@ class CalibrationTests(EvaluatorTestCase):
             retained = json.loads((output / "calibration.json").read_text(encoding="utf-8"))
             self.assertFalse(retained["accepted"])
 
+
+    def test_calibration_rejects_uncovered_task_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = root / "tasks.jsonl"
+            tasks.write_text(
+                json.dumps(
+                    {
+                        "id": "waterfall",
+                        "prompt": "Review this snippet.",
+                        "graders": [
+                            {"type": "response_not_empty"},
+                            {
+                                "type": "rubric",
+                                "dimensions": [
+                                    {
+                                        "name": "waterfall_diagnosis",
+                                        "levels": [
+                                            {
+                                                "name": "not_met",
+                                                "description": "Misses the waterfall.",
+                                            },
+                                            {
+                                                "name": "met",
+                                                "description": "Identifies the waterfall.",
+                                            },
+                                        ],
+                                    }
+                                ],
+                            },
+                        ],
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            calibration_result, calibration_output = self.run_calibrate(
+                root, extra_env={"SIMPLE_FAKE_PAIRWISE_COMPARE": "1"}
+            )
+            self.assertEqual(calibration_result.returncode, 0, calibration_result.stderr)
+            result = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(root / "out"),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "gpt-5.6-terra",
+                "--judge-model",
+                "gpt-5.6-sol",
+                "--calibration",
+                str(calibration_output / "calibration.json"),
+                "--dry-run",
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("omit rubric dimensions", result.stderr)
+            self.assertIn("waterfall_diagnosis", result.stderr)
+
+
+    def test_react_v2_tasks_require_react_review_calibration_dimensions(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            calibration_result, calibration_output = self.run_calibrate(
+                root, extra_env={"SIMPLE_FAKE_PAIRWISE_COMPARE": "1"}
+            )
+            self.assertEqual(calibration_result.returncode, 0, calibration_result.stderr)
+            result = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(Path(__file__).resolve().parents[1] / "tasks" / "react-best-practices-v2.jsonl"),
+                "--output",
+                str(root / "out"),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "gpt-5.6-terra",
+                "--judge-model",
+                "gpt-5.6-sol",
+                "--calibration",
+                str(calibration_output / "calibration.json"),
+                "--dry-run",
+            )
+            self.assertEqual(result.returncode, 2, result.stderr)
+            self.assertIn("primary_diagnosis", result.stderr)
+

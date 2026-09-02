@@ -213,6 +213,28 @@ REQUIRED_CALIBRATION_CASES = ("known-better", "known-worse", "tie")
 INTERVENTION = "injected_skill_instructions"
 
 
+def rubric_dimension_names(tasks: list[dict[str, Any]]) -> set[str]:
+    names: set[str] = set()
+    for task in tasks:
+        for grader in task["graders"]:
+            if grader["type"] != "rubric":
+                continue
+            for dimension in grader["dimensions"]:
+                names.add(dimension["name"])
+    return names
+
+
+def require_calibration_covers_dimensions(fixtures_path: str, tasks: list[dict[str, Any]]) -> None:
+    suite = load_calibration(Path(fixtures_path))
+    covered = {dimension.name for dimension in suite.dimensions}
+    missing = sorted(rubric_dimension_names(tasks) - covered)
+    if missing:
+        raise CalibrationBindingError(
+            "calibration fixtures omit rubric dimensions required by the tasks: "
+            + ", ".join(missing)
+        )
+
+
 def load_calibration(path: Path) -> CalibrationSuite:
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -447,6 +469,7 @@ def build_plan(arguments: argparse.Namespace) -> dict[str, Any]:
         except ValueError as exc:
             raise CalibrationBindingError(str(exc)) from exc
         calibration = load_calibration_binding(calibration_path, arguments.model, arguments.judge_model).as_dict()
+        require_calibration_covers_dimensions(calibration["fixtures_path"], tasks)
     judge_harness = getattr(arguments, "judge_harness", None) or target_harness
     executable, version = resolve_harness(target_harness, arguments.harness_bin)
     judge_executable, judge_version = resolve_harness(

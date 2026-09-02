@@ -524,3 +524,41 @@ class TaskTests(EvaluatorTestCase):
                 str((root / "fresh-run").resolve()),
             )
 
+
+    def test_react_v2_quality_suite_dry_run_without_calibration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            tasks = Path(__file__).resolve().parents[1] / "tasks" / "react-best-practices-v2.jsonl"
+            result = self.run_cli(
+                "run",
+                "--skill",
+                str(skill),
+                "--tasks",
+                str(tasks),
+                "--output",
+                str(root / "out"),
+                "--harness",
+                "codex",
+                "--harness-bin",
+                str(FAKE_CODEX),
+                "--model",
+                "test-model",
+                "--judge-model",
+                "judge-model",
+                "--dry-run",
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            plan = json.loads(result.stdout)
+            self.assertEqual(plan["counts"]["task_count"], 8)
+            self.assertEqual(plan["counts"]["total_invocations"], 40)
+            self.assertEqual(plan["configuration"]["calibration_status"], "not_run")
+            names = {
+                dimension["name"]
+                for task in plan["task_snapshot"]
+                for grader in task["graders"]
+                if grader["type"] == "rubric"
+                for dimension in grader["dimensions"]
+            }
+            self.assertEqual(names, {"primary_diagnosis", "actionable_fix", "grounded_claims"})
+

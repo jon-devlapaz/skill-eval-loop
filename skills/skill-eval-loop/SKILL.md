@@ -175,7 +175,8 @@ below threshold, and `2` if a judgment is invalid.
 The operator-controlled `calibration.json` and its original absolute fixture
 path are the binding trust root. The runner validates their
 internal consistency, models, labels, agreement threshold, assignment
-orientations, and fixture hash. It does not authenticate the origin of the raw
+orientations, fixture hash, and coverage of every task rubric dimension
+name. It does not authenticate the origin of the raw
 judge artifacts. Keep the calibration directory and fixture under controlled
 local custody; moving the fixture invalidates the binding even if its content
 is unchanged.
