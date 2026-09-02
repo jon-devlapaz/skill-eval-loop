@@ -561,4 +561,3 @@ class TaskTests(EvaluatorTestCase):
                 for dimension in grader["dimensions"]
             }
             self.assertEqual(names, {"primary_diagnosis", "actionable_fix", "grounded_claims"})
-

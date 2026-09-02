@@ -299,7 +299,7 @@ class JudgingTests(EvaluatorTestCase):
         self.assertEqual(evaluator.extract_json_payload(raw_json), raw_json)
         self.assertEqual(evaluator.extract_json_payload(fenced_json), raw_json)
         self.assertEqual(evaluator.extract_json_payload(fenced_plain), raw_json)
-        
+
         parsed = evaluator.load_judge_json(fenced_json)
         self.assertEqual(parsed["dimensions"][0]["name"], "safe choice")
 
@@ -409,4 +409,3 @@ class JudgingTests(EvaluatorTestCase):
             pairwise = pair_report["pairwise"][0]
             self.assertEqual(pairwise["status"], "independent")
             self.assertEqual(pairwise["reason"], "cross_provider_independent_judge")
-

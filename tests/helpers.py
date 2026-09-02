@@ -180,4 +180,3 @@ class EvaluatorTestCase(unittest.TestCase):
             env=self.isolated_env(root, extra_env),
         )
         return result, output
-
