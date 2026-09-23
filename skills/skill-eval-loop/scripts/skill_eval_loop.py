@@ -395,6 +395,8 @@ def payload_files(root: Path) -> list[Path]:
         relative = path.relative_to(root)
         if any(part in excluded for part in relative.parts):
             continue
+        if path.name.endswith(("-wal", "-shm", "-journal")):
+            continue
         if path.is_symlink():
             raise ValueError(f"symlinked skill payload entry is not allowed: {path}")
         if path.is_file():

@@ -481,6 +481,32 @@ class TaskTests(EvaluatorTestCase):
             self.assertFalse((destination / "tests").exists())
 
 
+    def test_sqlite_journals_excluded_while_databases_retained(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            skill = self.make_skill(root)
+            spec = importlib.util.spec_from_file_location("skill_eval_loop_payload_db", EVALUATOR)
+            self.assertIsNotNone(spec)
+            self.assertIsNotNone(spec.loader)
+            evaluator = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(evaluator)
+
+            before = evaluator.hash_skill(skill)
+            (skill / "data.db").write_bytes(b"database-contents")
+            after_db = evaluator.hash_skill(skill)
+            self.assertNotEqual(before, after_db)
+
+            for suffix in ("-wal", "-shm", "-journal"):
+                (skill / f"data.db{suffix}").write_bytes(b"ephemeral-journal")
+            self.assertEqual(after_db, evaluator.hash_skill(skill))
+
+            destination = root / "copied"
+            evaluator.copy_skill_payload(skill, destination)
+            self.assertTrue((destination / "data.db").exists())
+            for suffix in ("-wal", "-shm", "-journal"):
+                self.assertFalse((destination / f"data.db{suffix}").exists())
+
+
     def test_relative_and_home_paths_resolve_in_the_plan(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
