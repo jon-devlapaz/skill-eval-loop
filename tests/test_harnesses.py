@@ -601,6 +601,7 @@ class HarnessTests(EvaluatorTestCase):
                     "/bin/antigravity",
                     "--model",
                     "test-model",
+                    "--dangerously-skip-permissions",
                     "--print",
                     "Hello world",
                 ],

@@ -56,4 +56,11 @@ class AntigravityAdapter(BaseHarnessAdapter):
         timeout_seconds: int,
         skill_name: str = "",
     ) -> list[str]:
-        return [executable, "--model", model, "--print", prompt]
+        return [
+            executable,
+            "--model",
+            model,
+            "--dangerously-skip-permissions",
+            "--print",
+            prompt,
+        ]
