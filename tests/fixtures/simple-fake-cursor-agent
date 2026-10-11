@@ -1,0 +1,21 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = "--version" ]; then
+  printf 'simple-fake-cursor-agent 1.0\n'
+  exit 0
+fi
+
+if [ "${1:-}" = "--list-models" ]; then
+  printf '%s\n' \
+    "Available models" \
+    "" \
+    "claude-sonnet-5-medium - Claude Sonnet 5 Medium" \
+    "gpt-5.6-sol-medium - GPT-5.6 Sol Medium" \
+    "" \
+    "Tip: pass --model <id>"
+  exit 0
+fi
+
+printf 'unexpected invocation\n' >&2
+exit 9

@@ -28,9 +28,9 @@ accepted calibration and inspect the dry-run plan before authorizing live calls.
 "$EVALUATOR" run \
   --skill /absolute/path/to/target-skill \
   --tasks /absolute/custodian/path/holdout.jsonl \
-  --output /absolute/path/to/fresh-promotion-run \
-  --harness codex \
-  --harness-bin /absolute/path/to/codex \
+  --output /absolute/path/to/.eval-output/fresh-promotion-run \
+  --harness pi \
+  --harness-bin /absolute/path/to/pi \
   --model exact-runner-model \
   --judge-model exact-judge-model \
   --calibration /absolute/path/to/calibration.json \

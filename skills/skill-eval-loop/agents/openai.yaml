@@ -1,4 +1,4 @@
 interface:
   display_name: "Skill Eval Loop"
-  short_description: "Run paired Codex skill diagnostics"
+  short_description: "Run paired skill-vs-control diagnostics"
   default_prompt: "Use $skill-eval-loop to compare one local skill against a no-skill control with a dry-run and retained evidence."

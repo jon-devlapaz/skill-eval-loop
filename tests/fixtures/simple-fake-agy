@@ -1,0 +1,17 @@
+#!/bin/sh
+set -eu
+
+if [ "${1:-}" = "--version" ]; then
+  printf 'simple-fake-agy 1.0\n'
+  exit 0
+fi
+
+if [ "${1:-}" = "models" ]; then
+  printf '%s\n' \
+    "gemini-3.7-flash-high	Gemini 3.7 Flash (High)" \
+    "claude-sonnet-4-6	Claude Sonnet 4.6 (Thinking)"
+  exit 0
+fi
+
+printf 'unexpected invocation\n' >&2
+exit 9

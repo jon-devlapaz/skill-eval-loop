@@ -466,3 +466,25 @@ holdout remains the client-specific evidence gate, not missing framework code.
 
 **Dependencies:** Tasks 8 and 9. User approval before adding a provider or
 making paid calls.
+
+### Phase 3: Split the evaluator along existing owners
+
+The Phase 2 hill-climb is complete as framework code. `skill_eval_loop.py` outgrew
+the 1k-line ceiling; split along owners already visible in the file. Do not change
+evaluator behavior.
+
+- [x] PR A: Move harness adapters to `scripts/harnesses/`, introduce `TraceResult`
+  and `noop_env`/`isolated_home`, delete `mark_provisional`, fix unused `exc`.
+- [x] PR B: Extract `core/judging.py`; unify unknown judgment (`unknown_pairwise`
+  removed); replace the `judge_conditions` gate chain with a `JudgeGate`.
+- [x] PR C: Typed `Task`/`Dimension`/`CalibrationBinding`/`ReviewPacket` at load
+  and review boundaries; split tests into `test_tasks.py`, `test_harnesses.py`,
+  `test_judging.py`, `test_calibration.py`, and `test_review.py`.
+
+Result: adapters, judging, and tests now have files. CLI, runtime, and report
+still live in `skill_eval_loop.py` (~2k lines). Typed models are a load-boundary
+layer, not an end-to-end typed pipeline. Stop splitting until a later change
+needs a new owner. Task 10 remains the product evidence gate.
+
+Each PR: `python3 -m unittest discover -s tests -v` green, `ruff` clean, file
+delta stays under 1k lines.
